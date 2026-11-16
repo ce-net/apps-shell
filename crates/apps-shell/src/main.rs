@@ -384,6 +384,8 @@ async fn listen(addr: String, f: Arc<Face>) -> Result<(), String> {
     }
     let sock = tokio::net::TcpSocket::new_v4().map_err(|e| e.to_string())?;
     sock.set_reuseaddr(true).map_err(|e| e.to_string())?;
+    // a restart starts the new process before the old one stops (cell.install Restart): both hold the port meanwhile
+    sock.set_reuseport(true).map_err(|e| e.to_string())?;
     sock.bind(sa).map_err(|e| format!("{addr}: {e}"))?;
     let l: TcpListener = sock.listen(1024).map_err(|e| e.to_string())?;
     loop {
