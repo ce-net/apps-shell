@@ -21,6 +21,9 @@ pub const CELL: &str = "apps.shell";
 pub const LIVE_MS: u64 = 8_000;
 /// How often the gateway asks every tab's shell.
 pub const PROBE_MS: u64 = 2_000;
+/// How long one HealthOp may take (connect, then answer). A loaded node (foreman-ops-1 at load 45, 2026-11-16) answers
+/// in seconds and is still live: a slow answer keeps the tab; only no answer within LIVE_MS drops it.
+pub const HEALTH_MS: u64 = 5_000;
 
 /// The one grant this cell's own key holds: asking every tab shell's health, and having wire.ws-door mint a viewer's
 /// grant for the data cells of the tabs it serves (bounded Mint: only `approve.inbox` and `site.cellmap` rights, the

@@ -44,8 +44,8 @@ macro_rules! health {
     ($api:path, $op:path, $right:expr) => {{
         async {
             let tok = ui_chain::source_token::<$api>(&[$right], 30, None).ok()?;
-            let mut c = tokio::time::timeout(Duration::from_millis(1500), ce_wire::Client::<$api>::by_name(tok)).await.ok()?.ok()?;
-            c.deadline = Duration::from_millis(1500);
+            let mut c = tokio::time::timeout(Duration::from_millis(HEALTH_MS), ce_wire::Client::<$api>::by_name(tok)).await.ok()?.ok()?;
+            c.deadline = Duration::from_millis(HEALTH_MS);
             let h = c.call::<$op>(&()).await.ok()?;
             Some(h.ok)
         }
