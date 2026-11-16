@@ -1,0 +1,10 @@
+[package]
+name = "apps-shell-api"
+version = "0.1.0"
+description = "apps.shell@1: the tabs of apps.ce-net.com for the caller's chain, from the ce-net cell systems and which shells answer"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ce-wire = { workspace = true, features = ["client"] }

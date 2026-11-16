@@ -1,0 +1,26 @@
+/* apps.shell: rail of computed tabs, page column of glass cards. Tokens and components from ce-design only. */
+.frame{display:flex;min-height:100dvh}
+.page{flex:1;min-width:0;padding:16px 24px 80px}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.brand{font:400 15px var(--disp);letter-spacing:var(--track-disp);color:var(--ink);text-decoration:none;text-transform:uppercase}
+.rail a{position:relative;text-decoration:none;font:500 8.5px var(--sans);letter-spacing:.12em;text-transform:uppercase;padding:10px 4px;text-align:center}
+.rail .bdg{position:absolute;top:4px;right:6px;font:600 9px var(--mono);color:var(--acc)}
+.rail:empty{display:none}
+.list{padding:4px 0}
+.row{display:grid;grid-template-columns:1fr auto;gap:4px 14px;padding:11px 14px;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row .l{font:500 13px/1.45 var(--sans);color:var(--ink)}
+.row .m{font:400 10.5px var(--mono);color:var(--ink-2);letter-spacing:.02em}
+.row .r{align-self:center;justify-self:end}
+.tag{display:inline-block;font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:1px 6px;margin-left:6px}
+.tag.acc{color:var(--acc);border-color:var(--acc)}
+.tag.bad{color:var(--bad);border-color:var(--bad)}
+.tag.good{color:var(--good);border-color:var(--good)}
+.sys{margin:14px 0}
+.sys h2{margin:0;padding:12px 14px 8px;font:500 9.5px var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);display:flex;justify-content:space-between}
+.sys h2 b{color:var(--ink);font-weight:500}
+.on{display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}
+pre.signed{white-space:pre-wrap;word-break:break-word;margin:6px 0 0;font:400 11px/1.5 var(--mono);color:var(--ink-2)}
+.empty{padding:16px 14px;color:var(--ink-2);font:400 12px var(--sans)}
+.note{color:var(--ink-2);font:400 11px var(--mono);margin:10px 0}
+@media (max-width:600px){.page{padding:12px 16px 90px}.row{grid-template-columns:1fr}.row .r{justify-self:start}.on{justify-content:flex-start}}

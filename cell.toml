@@ -1,0 +1,21 @@
+# One repo = one cell = one function. The root view of apps.ce-net.com (SITES-ON-CELLS.md section 3): the tab bar is
+# computed per viewer from the cell systems of repo:ce-net-net, their chain and which shells answer. No tab list.
+[cell]
+api = "apps.shell"
+crate = "apps-shell"
+args = ["serve"]
+kind = "function"
+owner = "foreman/lead"
+keep = true  # the gateway face and the liveness loop must keep running
+depends_on = []
+
+[launch]
+health = "HealthOp"
+start_timeout_ms = 5000
+restart_backoff_ms = [1000, 300000]
+
+[placement]
+# the CORE system in repo:ce-net-net (replicas 2)
+
+[limits]
+disk_bytes = "64M"
