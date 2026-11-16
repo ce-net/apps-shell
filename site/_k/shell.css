@@ -15,7 +15,7 @@
 .tag{display:inline-block;font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:1px 6px;margin-left:6px}
 .tag.acc{color:var(--acc);border-color:var(--acc)}
 .tag.bad{color:var(--bad);border-color:var(--bad)}
-.tag.good{color:var(--good);border-color:var(--good)}
+.tag.good{color:var(--ok);border-color:var(--ok)}
 .sys{margin:14px 0}
 .sys h2{margin:0;padding:12px 14px 8px;font:500 9.5px var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);display:flex;justify-content:space-between}
 .sys h2 b{color:var(--ink);font-weight:500}

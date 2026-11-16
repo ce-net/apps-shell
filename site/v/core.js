@@ -1,6 +1,7 @@
 // The Core tab: site.cellmap, every cell of every cell system this viewer may see, per node; and a Pending strip
 // from approve.inbox when the viewer may open Approvals.
-export function mount(el, { h }) {
+export function mount(root, { h }) {
+  const el = { replaceChildren: (...k) => root.replaceChildren(...k.filter(x => x != null && x !== false)) };
   let stop = false, timer = 0;
   const sha = s => s ? s.slice(0, 7) : '';
   const run = async () => {

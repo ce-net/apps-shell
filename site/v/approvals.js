@@ -2,7 +2,8 @@
 // bundle's card. Signing is one passkey assertion at the bundle's sign_at; a session never approves.
 const until = s => s ? new Date(s * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '';
 
-export function mount(el, { h, tab }) {
+export function mount(root, { h, tab }) {
+  const el = { replaceChildren: (...k) => root.replaceChildren(...k.filter(x => x != null && x !== false)) };
   let stop = false, timer = 0;
   const head = (crumb, title) => [h('div', { class: 'crumb' }, 'ce / ', h('b', {}, 'Approvals'), ' / ', crumb), h('h1', { class: 'display' }, title)];
   const card = async (id) => {
