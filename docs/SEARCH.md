@@ -5,8 +5,8 @@ the search engine and the global cell search on apps.ce-net.com, private and glo
 
 | group | cell | what | who sees it |
 |---|---|---|---|
-| Private | search.hybrid `Find` (BM25 + EmbeddingGemma + rerank) | repos, talk log (`words`), mail, goals, rooms, inbox, calls, people | only labels the viewer's own exact grant names (`search.hybrid:read:<label>`, `read:repos`) |
-| Network | search.mesh `Mesh` | every node's own index of repos, cells, docs, merged; which machines answered | only with `search.mesh:find` (internal) |
+| Private | search.hybrid `Find` (BM25 + EmbeddingGemma + rerank) | repos, talk log (`words`), mail, goals, rooms, inbox, calls, people; CRM and call recordings in their own list | only labels the viewer's own exact grant names (`search.hybrid:read:<label>`, `read:repos`) |
+| Network | search.mesh `Mesh` + cell.search `Search` | every node's own index of repos, cells, docs, merged; which machines answered; every registered cell with its trust record | only with `search.mesh:find` (internal) |
 | Public | search.hybrid `Find`, acl `public` | what cells published for everyone (cells.catalog, Trana, twins) | anyone with `search.hybrid:find` |
 
 Each group shows its own 10 (`k=` 1 to 50 per group). For a viewer with private reads, search.hybrid is asked twice:
@@ -16,6 +16,32 @@ shared top 20 and Public showed 0.
 Each row shows its source and machine, and opens where it lives: a cell in `/core/`, a goal, room or inbox item in
 `/foreman/`, and a repo or file in this tab's **ce-ref viewer** `/search/?ref=repo:<repo>/<path>@<commit>`. Never a
 guessed GitHub link (Leif: references go through our cell reference system). Mail has no screen yet (no link).
+
+## CRM, calls and cells (2026-11-17, 09:00 UTC)
+
+- **Private · CRM and calls**: a third search.hybrid ask as the viewer, `sources: ["calls", "people"]`, so file hits
+  never push them out. It shows CRM people (crm.people), calls (crm.calls), promises (crm.promises) and call
+  recordings (notes and transcript), one row a record. Asked only when the viewer holds `search.hybrid:read:calls` or
+  `read:people`; both labels are private in search.hybrid (a wildcard never reads them).
+- **Record screen** `/search/?rec=<person|promise|call|meet>:<id>`, `GET /api/rec?r=..&q=..`: the record read as the
+  viewer from the cell that owns it: crm.people `Get` (role, next step, mood, open promises), crm.promises `Get`,
+  crm.calls `Get`. A recording (`meet:<dir>`) has no owning cell yet, so it shows search.hybrid's passage of that call
+  that best matches the viewer's query, asked with their `read:calls`. Ids are checked first (`..`, `/` outside meet,
+  `?` give 400). Each record links "Everything about <name>" back into search.
+- **Network · cells**: cell.search `Search` as the viewer (`cell.search:search`), each cell with who signed it, its
+  deploy.review verdict, advisories, ops, and how many devices run it; opens `/core/`.
+- **Machines**: the Network group lists every node search.mesh asked, green with its hits or red with why not.
+- Wiring: apps.shell's grant (`~/.local/share/ce/cell-keys/apps.shell/grant.hex` on foreman-ops-1, reissued with
+  `ce-iam grant`) adds `wire.ws-door:mint-for:cell.search`, `crm.people`, `crm.promises`, `crm.calls`. Leif's
+  people-file entry adds `cell.search:search`, `crm.people:read`, `crm.promises:read`, `crm.calls:read`. The four
+  contracts are copied verbatim; schemas `86ace76bede120b1`, `448ba80c84fc9d29`, `b536f482fae0a492`,
+  `75a354c0af4a012f` are pinned by a test (as `ce cell ops <api> --json` listed them on foreman-ops-1).
+- Proof (scoped test persons, removed after): owner, "Hooha factory visit Dongguan promise": CRM 7 records (the
+  hooha-deco-visit promise first, then Deco Yiu, two calls), 29 links, 0 GitHub. "Elbert custom meeting system no
+  internet in China": the venoculus call, Elbert's person record, the open meetfix promise and the recording
+  `meet:20261117-063039-venoculus`. Its record screen shows the passage "...my own custom meeting system ... in China
+  ... no internet". A stranger (`search.hybrid:find` only) gets CRM 0, Network not asked, Public 10, and 403 on every
+  record. Rollback: `~/.local/bin/apps-shell.bak-20261117-win2c3d.2` ran (restart verified) and was swapped back.
 
 ## The ce-ref viewer
 

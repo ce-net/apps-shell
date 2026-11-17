@@ -15,3 +15,11 @@
 .refview pre.code:focus-visible{outline:1px solid var(--acc);outline-offset:2px}
 .refname{overflow-wrap:anywhere}
 @media (max-width:600px){.searchbox .q{font-size:16px}.searchbox .btn{min-height:44px}.stats{grid-template-columns:1fr 1fr 1fr}}
+.nodes{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line-2)}
+.nodes .node{display:inline-flex;align-items:center;gap:6px;font:400 11px var(--mono,ui-monospace,monospace);color:var(--ink-2);padding:2px 8px;border:1px solid var(--line-2);border-radius:2px}
+.nodes .node.no{opacity:.75}
+.list .m.sub{padding:6px 12px;color:var(--ink-2)}
+.hit .tag.crm{border-color:var(--acc);color:var(--acc)}
+.refview pre.prose{white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--sans)}
+.refview .acts{display:flex;flex-wrap:wrap;gap:8px}
+.nodes .node i{width:6px;height:6px;border-radius:50%;flex:none}.nodes .node i.g{background:var(--live)}.nodes .node i.r{background:var(--bad)}

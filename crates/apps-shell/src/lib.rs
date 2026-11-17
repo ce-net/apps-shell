@@ -38,6 +38,10 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint-for:search.mesh",
     "wire.ws-door:mint-for:ref.resolve",
     "wire.ws-door:mint-for:ref.pin",
+    "wire.ws-door:mint-for:cell.search",
+    "wire.ws-door:mint-for:crm.people",
+    "wire.ws-door:mint-for:crm.promises",
+    "wire.ws-door:mint-for:crm.calls",
     "approve.inbox:health",
     "site.cellmap:health",
     "foreman.shell:health",
@@ -47,7 +51,8 @@ pub const GRANT: &[&str] = &[
 ];
 
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
-pub const DATA_CELLS: &[&str] = &["approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin"];
+pub const DATA_CELLS: &[&str] =
+    &["approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls"];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
 pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
@@ -62,7 +67,8 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
 }
 
 /// Leif's abilities when the people file does not name him.
-pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs", "search.hybrid:find", "search.mesh:find", "ref.resolve:read", "ref.pin:read"];
+pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs", "search.hybrid:find", "search.mesh:find", "ref.resolve:read", "ref.pin:read",
+    "cell.search:search", "crm.people:read", "crm.promises:read", "crm.calls:read"];
 
 /// The Search tab's private reads: search.hybrid opens a private label only for an ability naming it exactly (its
 /// lib.rs PRIVATE), and every repo by the exact `read:repos`. A viewer's search carries only the ones they hold.
@@ -143,11 +149,53 @@ pub fn open_of(source: &str, kind: &str, path: &str, key: &str) -> Option<String
     if kind == "cell" || source == "cells" || path.starts_with("cells.catalog/") || path.starts_with("caps/cell/") {
         return Some("/core/".into());
     }
+    if let Some(r) = rec_of(source, path) {
+        return Some(format!("/search/?rec={r}"));
+    }
     if ["goals", "rooms", "inbox", "calls", "words"].contains(&source) {
         return Some("/foreman/".into());
     }
     // names are [A-Za-z0-9._-] and '/', ':' only (ref_of), so nothing needs escaping in a query value
     ref_of(source, kind, path, key).map(|r| format!("/search/?ref={r}"))
+}
+
+/// The record a CRM or call hit of search.hybrid names, for the Search tab's record screen (`/search/?rec=`), read
+/// from the cell that owns it as the viewer: `person:<id>` (crm.people Get: profile, open promises, mood),
+/// `promise:<id>` (crm.promises Get), `call:<id>` (crm.calls Get), `meet:<recording>` (a call recording's notes and
+/// transcript; search.hybrid's own passages, as no cell serves whole transcripts yet). Paths as search.hybrid writes
+/// them: `people/<id>` and `calls/<id>` (search-hybrid-collect, from crm.people and crm.calls), `crm/people/<id>`,
+/// `crm/calls/<id>`, `crm/promises/<id>` and `meet/<dir>[/<file>]` (crm.rs). A numbered `calls/<n>` row of the old
+/// CALLS.md has no record: None.
+pub fn rec_of(source: &str, path: &str) -> Option<String> {
+    if !(source == "calls" || source == "people") {
+        return None;
+    }
+    let (kind, id) = if let Some(id) = path.strip_prefix("crm/promises/") {
+        ("promise", id)
+    } else if let Some(id) = path.strip_prefix("crm/people/").or_else(|| path.strip_prefix("people/")) {
+        ("person", id)
+    } else if let Some(id) = path.strip_prefix("crm/calls/").or_else(|| path.strip_prefix("calls/")) {
+        if id.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        ("call", id)
+    } else if let Some(id) = path.strip_prefix("meet/") {
+        ("meet", id)
+    } else {
+        return None;
+    };
+    let r = format!("{kind}:{id}");
+    parse_rec(&r).map(|_| r)
+}
+
+/// A record screen's ref, checked: `<person|promise|call|meet>:<id>`, the id 1 to 200 of `[A-Za-z0-9._:@-]` (and
+/// `/` for meet), never `..`. -> (kind, id).
+pub fn parse_rec(r: &str) -> Option<(&'static str, String)> {
+    let (k, id) = r.split_once(':')?;
+    let kind = ["person", "promise", "call", "meet"].into_iter().find(|x| *x == k)?;
+    let ok = |c: char| c.is_ascii_alphanumeric() || "._:@-".contains(c) || (kind == "meet" && c == '/');
+    ((1..=200).contains(&id.len()) && id.chars().all(ok) && !id.contains("..") && !id.starts_with('/') && !id.ends_with('/'))
+        .then(|| (kind, id.to_string()))
 }
 
 /// A viewer link's ref, checked: `repo:<repo>/<path>` with an optional `@<commit>` (4 to 40 lowercase hex), names as

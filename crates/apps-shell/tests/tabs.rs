@@ -166,3 +166,34 @@ fn a_fallback_origin_is_only_a_real_one() {
         assert_eq!(origin_of(k), None, "{k}");
     }
 }
+
+#[test]
+fn crm_and_call_hits_open_their_record_screen() {
+    assert_eq!(open_of("calls", "", "crm/promises/deal.promise:ce-net:hooha-deco-visit", "").as_deref(), Some("/search/?rec=promise:deal.promise:ce-net:hooha-deco-visit"));
+    assert_eq!(open_of("people", "", "people/deco-hooha", "").as_deref(), Some("/search/?rec=person:deco-hooha"));
+    assert_eq!(open_of("people", "", "crm/people/deco-hooha", "").as_deref(), Some("/search/?rec=person:deco-hooha"));
+    assert_eq!(open_of("calls", "", "calls/sched-1234-abc", "").as_deref(), Some("/search/?rec=call:sched-1234-abc"));
+    assert_eq!(open_of("calls", "", "meet/20261117-063039-venoculus", "").as_deref(), Some("/search/?rec=meet:20261117-063039-venoculus"));
+    assert_eq!(open_of("calls", "", "meet/calls/2026-11-04-acme.md", "").as_deref(), Some("/search/?rec=meet:calls/2026-11-04-acme.md"));
+    // the old CALLS.md rows are numbered, not records: they still open Foreman
+    assert_eq!(open_of("calls", "", "calls/7", "").as_deref(), Some("/foreman/"));
+    // only the private CRM labels name records; a file called people/x is a file
+    assert_eq!(rec_of("files", "people/x"), None);
+    for bad in ["meet:../etc", "meet:/abs", "person:", "person:a b", "promise:x?y=1", "other:x", "person:a/b"] {
+        assert!(parse_rec(bad).is_none(), "{bad}");
+    }
+    assert_eq!(parse_rec("meet:a/b.md"), Some(("meet", "a/b.md".to_string())));
+}
+
+#[test]
+fn cell_search_and_the_crm_cells_are_minted_for_and_only_read() {
+    for c in ["cell.search", "crm.people", "crm.promises", "crm.calls"] {
+        assert!(DATA_CELLS.contains(&c) && GRANT.contains(&format!("wire.ws-door:mint-for:{c}").as_str()), "{c}");
+    }
+    for a in ["cell.search:search", "crm.people:read", "crm.promises:read", "crm.calls:read"] {
+        assert!(ROOT.contains(&a), "{a}");
+    }
+    assert!(!ROOT.iter().any(|a| a.ends_with(":write") || a.ends_with(":reindex") || a.ends_with(":extract")));
+    // a viewer grant never carries a wildcard into the CRM cells
+    assert_eq!(viewer_grant(&s(&["crm.people:*", "crm.people:read"])), s(&["crm.people:read"]));
+}

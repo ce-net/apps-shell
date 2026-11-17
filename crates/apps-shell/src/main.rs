@@ -11,6 +11,9 @@
 //!   `private` (search.hybrid by the viewer's exact read grants), `network` (search.mesh: every node's own index of
 //!   repos, cells and docs; internal, only with `search.mesh:find`) and `public` (what cells published for everyone);
 //!   each group its own [`PER_GROUP`] (default 10, `k=` 1 to 50): an owner's private hits never push Public to 0;
+//! - `GET /api/rec?r=<person|promise|call|meet>:<id>[&q=<words>]`: the Search tab's record screen for a CRM or call
+//!   hit, read as the viewer from the cell that owns it (crm.people, crm.promises, crm.calls `Get`); a call recording
+//!   (`meet:`) shows search.hybrid's passage of it, asked as the viewer with `search.hybrid:read:calls`;
 //! - `GET /api/ref?r=repo:<repo>/<path>[@<commit>]`: the Search tab's file viewer, through the cell reference system
 //!   as the viewer: ref.resolve `Resolve` (where it lives, its ce-ref:// id and content hash) and ref.pin `Fetch` (only
 //!   the bytes with that hash); with no commit, the HEAD of the checkout those cells read on this node;
@@ -333,6 +336,227 @@ mod ref_pin_api {
     }
 }
 
+/// cell.search's contract (repo:cell-search crates/cell-search-api, major 1), copied verbatim like door_api.
+#[allow(dead_code)]
+mod cell_search_api {
+    ce_wire::api! {
+    api CellSearch = "cell.search", version 1;
+    types {
+        /// Health contract: these three fields, in this order, in every cell.
+        pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+        /// `q` = plain words ("database", "print farm"); `k` = most hits wanted (0 = 10, at most 50).
+        pub struct SearchReq { pub q: String, pub k: u32 }
+        /// One op of a cell: wire id, name, request and answer types as the api! block writes them, the right it needs.
+        pub struct Op { pub id: u32, pub name: String, pub req: String, pub resp: String, pub right: String }
+        /// A known advisory (osv.dev: RUSTSEC / GHSA / CVE) against one crate at the version the cell's Cargo.lock pins.
+        pub struct Advisory { pub id: String, pub krate: String, pub version: String }
+        /// Why a cell can be trusted, from records, never from its own words:
+        /// `signer` = "ours" (published under the ce-net owners) or "community"; `publisher` = its GitHub owner;
+        /// `source` = git url; `commit` = the 40-hex commit indexed ("" = no checkout seen);
+        /// `review` = the deploy.review verdict for exactly that commit (pass | refuse | advisory | unreviewed),
+        /// `review_id` = "<api>@<commit 12 hex>", `reviewed_at` = unix s (0 = never);
+        /// `deps` = crates in its Cargo.lock, `registry_deps` = of those from crates.io (each checked against osv.dev),
+        /// `advisories` = the open ones, `audited_at` = unix s of that check (0 = not yet).
+        pub struct Trust {
+            pub signer: String, pub publisher: String, pub source: String, pub commit: String,
+            pub review: String, pub review_id: String, pub reviewed_at: u64,
+            pub deps: u32, pub registry_deps: u32, pub advisories: Vec<Advisory>, pub audited_at: u64,
+        }
+        /// One cell. `score` = 0..1 blend of `text_score` (BM25 over name, title, about and ops) and `meaning_score`
+        /// (cosine of search.embed vectors); `running_on` = devices running it now.
+        pub struct Hit {
+            pub api: String, pub repo: String, pub title: String, pub about: String, pub owner: String, pub version: u32,
+            pub ops: Vec<Op>, pub depends_on: Vec<String>, pub running_on: u32, pub private: bool,
+            pub score: f32, pub text_score: f32, pub meaning_score: f32, pub trust: Trust,
+        }
+        /// `took_us` = time inside the cell; `indexed` = cells the caller may see; `index_at` = unix s of the last feed.
+        pub struct SearchResp { pub hits: Vec<Hit>, pub took_us: u64, pub indexed: u32, pub model: String, pub index_at: u64 }
+        /// `changed` = cells re-read in the last feed (unchanged commit + row = reused); `feed_ms` = its wall time.
+        pub struct Stats {
+            pub cells: u32, pub private: u32, pub with_ops: u32, pub with_lock: u32, pub audited: u32, pub with_advisories: u32,
+            pub reviewed: u32, pub crates_checked: u32, pub changed: u32, pub feed_ms: u64, pub index_at: u64, pub errors: Vec<String>,
+        }
+        pub enum SearchError { Invalid(String), Failed(String) }
+    }
+    ops {
+        1 => HealthOp(()) -> Health, needs "cell.search:health";
+        2 => Search(SearchReq) -> Result<SearchResp, SearchError>, needs "cell.search:search";
+        3 => Get(String) -> Option<Hit>, needs "cell.search:search";
+        4 => StatsOp(()) -> Stats, needs "cell.search:stats";
+        5 => Reindex(()) -> Result<Stats, SearchError>, needs "cell.search:reindex", deadline_ms 300000;
+    }
+}
+}
+
+/// crm.people's contract (repo:crm-people crates/crm-people-api, major 1), copied verbatim like door_api.
+#[allow(dead_code)]
+mod crm_people_api {
+    ce_wire::api! {
+    // accepts: the schema before SetProjects/Projects (two ce-wire hashings of it), so every older caller still connects
+    api CrmPeople = "crm.people", version 1, accepts [0x8a8fedb2fa7ed346, 0xdfc777d5b87fc2d7];
+    types {
+        /// Health contract: these three fields, in this order, in every cell.
+        pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+        /// Who did it: we (Leif and every lane writing as him), they, or both.
+        pub enum Side { Us, Them, Both }
+        /// What an event was. Reschedule, NoShow and Cancel carry `by` so a reschedule by us counts against us.
+        pub enum Kind { Message, Meeting, Call, Reschedule, NoShow, Cancel, Quote, Sample, Order, Payment, Complaint, Apology, Question, Other }
+        /// One person (or one company contact). `id` is a slug ("richard-wizard3d"). `aliases` are crm.dump refs
+        /// (exact, or a prefix ending in `*`) whose events belong to this person. `cursor_ts` is the newest dump event
+        /// already extracted; `summary` and `next_step` are rewritten by the extractor.
+        pub struct Person {
+            pub id: String,
+            pub name: String,
+            pub org: String,
+            pub role: String,
+            pub aliases: Vec<String>,
+            pub summary: String,
+            pub next_step: String,
+            pub owner_lane: String,
+            pub cursor_ts: i64,
+            pub updated_s: i64,
+        }
+        /// One meaningful event with a person, typed. `event_id` is the crm.dump event it came from.
+        pub struct Interaction { pub person: String, pub ts: i64, pub kind: Kind, pub by: Side, pub summary: String, pub event_id: String }
+        pub enum PromiseStatus { Open, Kept, Broken, Dropped }
+        /// Something someone said they would do. `owner` Us = we owe it.
+        pub struct Promise { pub id: String, pub person: String, pub owner: Side, pub text: String, pub due_s: Option<i64>, pub status: PromiseStatus, pub made_ts: i64, pub evidence: String }
+        /// How they feel toward us at `ts`: -2 angry, -1 annoyed, 0 neutral, 1 warm, 2 enthusiastic, with their words.
+        pub struct Mood { pub person: String, pub ts: i64, pub score: i32, pub evidence: String, pub event_id: String }
+        pub struct Profile { pub person: Person, pub mood: Option<Mood>, pub open_promises: Vec<Promise>, pub interactions: u32, pub last_ts: i64 }
+        /// One person who needs care now, with every reason and a score (higher = sooner).
+        pub struct AtRisk { pub person: String, pub name: String, pub org: String, pub score: u32, pub reasons: Vec<String>, pub mood: Option<Mood>, pub next_step: String }
+        /// `person`: one id (else every person). `auto`: also make a Person for every dump ref with an inbound message
+        /// that no alias covers. `reset`: drop the person's derived rows and extract from the start. `max_people`:
+        /// at most this many people per run (0 = 25).
+        pub struct ExtractReq { pub person: Option<String>, pub auto: bool, pub reset: bool, pub max_people: u32 }
+        pub struct ExtractResp { pub people: u32, pub events: u32, pub interactions: u32, pub promises: u32, pub moods: u32, pub errors: Vec<String> }
+        pub enum PeopleError { Invalid(String), NotFound(String), Store(String), Extract(String) }
+        /// The projects a person is part of (slugs: "led-frame", "bar-cocktail-pour"), so a message about one project is
+        /// never sent to someone outside it (lead m:bd0cf89f; the corner piece that went to the wrong Hans).
+        pub struct ProjectsReq { pub person: String, pub projects: Vec<String> }
+    }
+    ops {
+        1 => HealthOp(()) -> Health, needs "crm.people:health";
+        // Make or change a person (aliases, name, org); the extractor's cursor and summary are kept.
+        2 => Upsert(Person) -> Result<Person, PeopleError>, needs "crm.people:write";
+        // By id, alias or a unique name match.
+        3 => Get(String) -> Result<Profile, PeopleError>, needs "crm.people:read";
+        // Every interaction with the person, oldest first.
+        4 => Timeline(String) -> Result<Vec<Interaction>, PeopleError>, needs "crm.people:read";
+        // Open promises, of one person or everyone, soonest due first.
+        5 => OpenPromises(Option<String>) -> Result<Vec<Promise>, PeopleError>, needs "crm.people:read";
+        // People whose mood is low or falling, or whom we rescheduled, missed or owe overdue promises; highest first.
+        6 => AtRiskList(()) -> Result<Vec<AtRisk>, PeopleError>, needs "crm.people:read";
+        // Case-insensitive words over name, org, role, aliases and summary.
+        7 => Search(String) -> Result<Vec<Person>, PeopleError>, needs "crm.people:read";
+        // Read new crm.dump events and update the typed rows (DeepSeek Flash).
+        8 => Extract(ExtractReq) -> Result<ExtractResp, PeopleError>, needs "crm.people:extract";
+        // the person's projects: set (replaces the list) and read; an unknown person is NotFound
+        9 => SetProjects(ProjectsReq) -> Result<Vec<String>, PeopleError>, needs "crm.people:write";
+        10 => Projects(String) -> Result<Vec<String>, PeopleError>, needs "crm.people:read";
+    }
+}
+}
+
+/// crm.promises's contract (repo:crm-promises crates/crm-promises-api, major 1), copied verbatim like door_api.
+#[allow(dead_code)]
+mod crm_promises_api {
+    ce_wire::api! {
+    api CrmPromises = "crm.promises", version 1;
+    types {
+        /// Health contract: these three fields, in this order, in every cell.
+        pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+        /// Open until done (Kept), missed (Broken) or no longer wanted (Dropped).
+        pub enum Status { Open, Kept, Broken, Dropped }
+        /// One promise. `id` is the object id `deal.promise:<tenant>:<local>` (the ops.graph id form; tenant
+        /// `[a-z0-9-]{1,32}`, local `[A-Za-z0-9._-]{1,64}`); Put upserts by it. `to` is who it was made to (an email
+        /// or a name), `to_name` the person's name, `company` theirs. Times are unix ms (UTC); `due` 0 = no date.
+        /// `source` is where it was made (`gmail:sent:4348`, a WeChat thread). `note` says why the status last
+        /// changed. `updated_at` is set by the cell.
+        pub struct Promise {
+            pub id: String,
+            pub text: String,
+            pub to: String,
+            pub to_name: String,
+            pub company: String,
+            pub made_at: u64,
+            pub due: u64,
+            pub status: Status,
+            pub source: String,
+            pub note: String,
+            pub updated_at: u64,
+        }
+        /// Every field optional (empty = any): `person` matches `to` or `to_name`, `company` the company, both
+        /// case-insensitive substrings; `tenant` exact. Sorted by `made_at`, oldest first.
+        pub struct ListReq { pub person: String, pub company: String, pub status: Option<Status>, pub tenant: String }
+        pub struct SetStatusReq { pub id: String, pub status: Status, pub note: String }
+        pub enum PromiseError { Invalid(String), NotFound(String), Store(String) }
+    }
+    ops {
+        1 => HealthOp(()) -> Health, needs "crm.promises:health";
+        2 => Put(Promise) -> Result<Promise, PromiseError>, needs "crm.promises:write";
+        3 => Get(String) -> Result<Promise, PromiseError>, needs "crm.promises:read";
+        4 => List(ListReq) -> Result<Vec<Promise>, PromiseError>, needs "crm.promises:read";
+        5 => SetStatus(SetStatusReq) -> Result<Promise, PromiseError>, needs "crm.promises:write";
+    }
+}
+}
+
+/// crm.calls's contract (repo:crm-calls crates/crm-calls-api, major 2), copied verbatim like door_api.
+#[allow(dead_code)]
+mod crm_calls_api {
+    ce_wire::api! {
+    api CrmCalls = "crm.calls", version 2;
+    types {
+        /// Health contract: these three fields, in this order, in every cell.
+        pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+        /// How the call happens. `Other` names anything else ("zoom", "whatsapp").
+        pub enum Channel { Jitsi, Wechat, Phone, InPerson, Other(String) }
+        /// `Booked` only when the other person said yes (their words are in `confirmed_by`). `Proposed`: we asked, no yes
+        /// yet ("awaiting approval", Leif 2026-11-05: "if the other person has not agreed, it's not booked"). `Event`: a
+        /// public event or meetup with nobody to confirm.
+        pub enum Status { Booked, Held, Missed, Cancelled, Moved, Proposed, Event }
+        /// One call with one person. `id` is stable (a ce-schedule task id or a slug) and Put upserts by it. Times are
+        /// unix seconds (UTC); `tz` is the person's zone for display ("Asia/Shanghai"). `owner` is the lane that holds
+        /// the call. `source` says where the record came from (ce-schedule, a mail, a WeChat thread). `updated_s` is
+        /// set by the cell. `confirmed_by` is where the other person said yes (a Message-ID, a WeChat/X thread, a
+        /// calendar invite id); `None` means no one has.
+        pub struct CallRecord {
+            pub id: String,
+            pub person: String,
+            pub company: String,
+            pub channel: Channel,
+            pub at_s: i64,
+            pub tz: String,
+            pub status: Status,
+            pub owner: String,
+            pub link: String,
+            pub brief: String,
+            pub outcome: String,
+            pub next_step: String,
+            pub next_step_at_s: Option<i64>,
+            pub source: String,
+            pub updated_s: i64,
+            pub confirmed_by: Option<String>,
+        }
+        /// Every field optional: `person` matches person or company, case-insensitive substring; `since_s` keeps
+        /// calls at or after that time. Results are sorted by `at_s`, oldest first.
+        pub struct ListReq { pub person: Option<String>, pub status: Option<Status>, pub since_s: Option<i64> }
+        /// Counts by status, plus how many calls still carry a next step.
+        pub struct CallStats { pub total: u32, pub booked: u32, pub held: u32, pub missed: u32, pub cancelled: u32, pub moved: u32, pub open_next_steps: u32, pub proposed: Option<u32>, pub event: Option<u32> }
+        pub enum CallsError { Invalid(String), NotFound(String), Store(String) }
+    }
+    ops {
+        1 => HealthOp(()) -> Health, needs "crm.calls:health";
+        2 => Put(CallRecord) -> Result<CallRecord, CallsError>, needs "crm.calls:write";
+        3 => Get(String) -> Result<CallRecord, CallsError>, needs "crm.calls:read";
+        4 => List(ListReq) -> Result<Vec<CallRecord>, CallsError>, needs "crm.calls:read";
+        5 => Stats(()) -> Result<CallStats, CallsError>, needs "crm.calls:read";
+    }
+}
+}
+
 /// The most of a file the viewer shows.
 const VIEW_MAX: usize = 512 * 1024;
 
@@ -390,6 +614,162 @@ async fn view_ref(person: &str, abilities: &[String], r: &str) -> (&'static str,
         "via": ["ref.resolve", "ref.pin"]}))
 }
 
+/// unix seconds or ms as "YYYY-MM-DD HH:MM UTC" ("" for 0).
+fn when(t: i64) -> String {
+    if t <= 0 {
+        return String::new();
+    }
+    let s = if t > 100_000_000_000 { t / 1000 } else { t };
+    let (days, rem) = (s.div_euclid(86_400), s.rem_euclid(86_400));
+    // civil from days (Howard Hinnant)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", rem / 3600, rem % 3600 / 60)
+}
+
+/// One CRM or call record for the Search tab's record screen, read as the viewer from the cell that owns it
+/// (`person:` crm.people Get, `promise:` crm.promises Get, `call:` crm.calls Get). `meet:` has no owning cell yet:
+/// search.hybrid is asked as the viewer for that recording's passage (sources `calls`, its private label), with the
+/// viewer's query `q` first. -> (status, body) with `title`, `fields` ([label, value]) and `text`.
+async fn view_rec(person: &str, abilities: &[String], r: &str, q: &str) -> (&'static str, serde_json::Value) {
+    use serde_json::json;
+    let Some((kind, id)) = parse_rec(r) else {
+        return ("400 Bad Request", json!({"error": "rec: person:<id>, promise:<id>, call:<id> or meet:<recording>"}));
+    };
+    let closed = |cell: &str| ("403 Forbidden", json!({"error": format!("{cell} is not open to you")}));
+    let down = |cell: &str, e: String| ("503 Service Unavailable", json!({"error": format!("{cell}: {}", e.chars().take(200).collect::<String>())}));
+    let missing = |cell: &str, e: String| ("404 Not Found", json!({"error": format!("{cell} has no {kind} {id}: {}", e.chars().take(200).collect::<String>())}));
+    let opt = |s: &str| if s.is_empty() { None } else { Some(s.to_string()) };
+    let f = |rows: Vec<(&str, Option<String>)>| rows.into_iter().filter_map(|(k, v)| v.map(|v| json!([k, v]))).collect::<Vec<_>>();
+    match kind {
+        "person" => {
+            use crm_people_api as cp;
+            if for_cell(abilities, "crm.people", "crm.people:read").is_none() {
+                return closed("crm.people");
+            }
+            let c = match client::<cp::CrmPeople>(person, abilities).await {
+                Ok(c) => c,
+                Err(e) => return down("crm.people", e),
+            };
+            let p = match c.call::<cp::Get>(&id).await {
+                Ok(Ok(p)) => p,
+                Ok(Err(e)) => return missing("crm.people", format!("{e:?}")),
+                Err(e) => return down("crm.people", e.to_string()),
+            };
+            let pp = &p.person;
+            let mood = p.mood.as_ref().map(|m| format!("{} ({}): {}", m.score, when(m.ts), m.evidence));
+            let promises: Vec<String> = p
+                .open_promises
+                .iter()
+                .map(|x| {
+                    let who = if matches!(x.owner, cp::Side::Us) { "We owe" } else { "They owe" };
+                    format!("{who}: {}{}", x.text, x.due_s.map(|d| format!(" (due {})", when(d))).unwrap_or_default())
+                })
+                .collect();
+            let title = if pp.org.is_empty() { pp.name.clone() } else { format!("{}, {}", pp.name, pp.org) };
+            ("200 OK", json!({"kind": kind, "id": id.clone(), "cell": "crm.people", "title": title,
+                "fields": f(vec![("role", opt(&pp.role)), ("next step", opt(&pp.next_step)), ("mood", mood), ("interactions", Some(p.interactions.to_string())),
+                    ("last contact", opt(&when(p.last_ts))), ("lane", opt(&pp.owner_lane)), ("aliases", opt(&pp.aliases.join(", ")))]),
+                "text": pp.summary, "list_title": "Open promises", "list": promises, "search": pp.name}))
+        }
+        "promise" => {
+            use crm_promises_api as pr;
+            if for_cell(abilities, "crm.promises", "crm.promises:read").is_none() {
+                return closed("crm.promises");
+            }
+            let c = match client::<pr::CrmPromises>(person, abilities).await {
+                Ok(c) => c,
+                Err(e) => return down("crm.promises", e),
+            };
+            let p = match c.call::<pr::Get>(&id).await {
+                Ok(Ok(p)) => p,
+                Ok(Err(e)) => return missing("crm.promises", format!("{e:?}")),
+                Err(e) => return down("crm.promises", e.to_string()),
+            };
+            let who = if p.to_name.is_empty() { p.to.clone() } else { p.to_name.clone() };
+            let title = format!("Promise to {who}{}", if p.company.is_empty() { String::new() } else { format!(" ({})", p.company) });
+            ("200 OK", json!({"kind": kind, "id": id.clone(), "cell": "crm.promises", "title": title,
+                "fields": f(vec![("status", Some(format!("{:?}", p.status).to_lowercase())), ("due", opt(&when(p.due as i64))), ("made", opt(&when(p.made_at as i64))),
+                    ("to", opt(&p.to)), ("made in", opt(&p.source)), ("why this status", opt(&p.note)), ("changed", opt(&when(p.updated_at as i64)))]),
+                "text": p.text, "search": who}))
+        }
+        "call" => {
+            use crm_calls_api as cc;
+            if for_cell(abilities, "crm.calls", "crm.calls:read").is_none() {
+                return closed("crm.calls");
+            }
+            let c = match client::<cc::CrmCalls>(person, abilities).await {
+                Ok(c) => c,
+                Err(e) => return down("crm.calls", e),
+            };
+            let x = match c.call::<cc::Get>(&id).await {
+                Ok(Ok(x)) => x,
+                Ok(Err(e)) => return missing("crm.calls", format!("{e:?}")),
+                Err(e) => return down("crm.calls", e.to_string()),
+            };
+            let channel = match &x.channel {
+                cc::Channel::Jitsi => "Jitsi".to_string(),
+                cc::Channel::Wechat => "WeChat".to_string(),
+                cc::Channel::Phone => "phone".to_string(),
+                cc::Channel::InPerson => "in person".to_string(),
+                cc::Channel::Other(o) => o.clone(),
+            };
+            let text = [("Brief", &x.brief), ("Outcome", &x.outcome)]
+                .iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let title = format!("Call with {}{}, {}", x.person, if x.company.is_empty() { String::new() } else { format!(" ({})", x.company) }, when(x.at_s));
+            ("200 OK", json!({"kind": kind, "id": id.clone(), "cell": "crm.calls", "title": title,
+                "fields": f(vec![("status", Some(format!("{:?}", x.status).to_lowercase())), ("channel", Some(channel)), ("their zone", opt(&x.tz)),
+                    ("next step", opt(&x.next_step)), ("next step by", x.next_step_at_s.map(when)), ("confirmed by", x.confirmed_by.clone()),
+                    ("lane", opt(&x.owner)), ("from", opt(&x.source)), ("link", opt(&x.link))]),
+                "text": text, "search": x.person}))
+        }
+        _ => {
+            // meet: the recording's passage from search.hybrid, as the viewer (their exact read of the calls label)
+            if for_cell(abilities, "search.hybrid", "search.hybrid:read:calls").is_none() || for_cell(abilities, "search.hybrid", "search.hybrid:find").is_none() {
+                return closed("call transcripts");
+            }
+            let want = format!("meet/{id}");
+            let room = id.split('/').next().unwrap_or("").splitn(3, '-').nth(2).unwrap_or("").replace('-', " ");
+            let asks: Vec<String> =
+                [q.to_string(), format!("call {room}"), id.replace(['/', '-', '.'], " ")].into_iter().filter(|s| !s.trim().is_empty()).collect();
+            let c = match client::<hybrid_api::SearchHybrid>(person, abilities).await {
+                Ok(c) => c,
+                Err(e) => return down("search.hybrid", e),
+            };
+            let mut found: Option<hybrid_api::Hit> = None;
+            for a in asks {
+                match c.call::<hybrid_api::Find>(&hybrid_api::FindReq { q: a, k: 50, sources: vec!["calls".into()], rerank: false }).await {
+                    Ok(Ok(r)) => {
+                        if let Some(h) = r.hits.into_iter().find(|h| h.path == want) {
+                            found = Some(h);
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => return down("search.hybrid", format!("{e:?}")),
+                    Err(e) => return down("search.hybrid", e.to_string()),
+                }
+            }
+            let Some(h) = found else { return missing("search.hybrid", "no passage of it is open to you".into()) };
+            ("200 OK", json!({"kind": kind, "id": id.clone(), "cell": "search.hybrid", "title": h.title,
+                "fields": f(vec![("recording", Some(id.clone())), ("indexed on", Some(h.machine.clone())), ("label", Some(h.acl.clone()))]),
+                "text": h.snippet,
+                "note": "The passage of this call that best matches your search. The whole transcript stays in meet-notes on the machine that recorded it; no cell serves it whole yet.",
+                "search": room}))
+        }
+    }
+}
+
 fn node_name() -> String {
     std::fs::read_to_string("/etc/hostname").unwrap_or_default().trim().to_string()
 }
@@ -402,22 +782,32 @@ fn node_name() -> String {
 async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_json::Value {
     use serde_json::json;
     let t0 = Instant::now();
-    let find = |ab: Vec<String>, k: u32| {
+    let find = |ab: Vec<String>, k: u32, sources: Vec<String>| {
         let q = q.to_string();
         async move {
             for_cell(&ab, "search.hybrid", "search.hybrid:find").ok_or("not open to you".to_string())?;
             let c = client::<hybrid_api::SearchHybrid>(person, &ab).await?;
-            let r = c.call::<hybrid_api::Find>(&hybrid_api::FindReq { q, k, sources: vec![], rerank: true }).await.map_err(|e| e.to_string())?;
+            let r = c.call::<hybrid_api::Find>(&hybrid_api::FindReq { q, k, sources, rerank: true }).await.map_err(|e| e.to_string())?;
             r.map_err(|e| format!("{e:?}"))
         }
     };
     let pub_ab = public_only(abilities);
     // as the viewer: enough to fill Private after the public hits in it are taken out
-    let hybrid = find(abilities.to_vec(), if pub_ab.is_some() { (k * 2).min(50) } else { k });
+    let hybrid = find(abilities.to_vec(), if pub_ab.is_some() { (k * 2).min(50) } else { k }, vec![]);
     let public_ask = async {
         match pub_ab.clone() {
-            Some(ab) => Some(find(ab, k).await),
+            Some(ab) => Some(find(ab, k, vec![]).await),
             None => None,
+        }
+    };
+    // CRM people, calls, promises and call transcripts: their own ask (sources calls and people, the viewer's exact
+    // reads of those labels), so many file hits never push them out of Private
+    let crm_open = ["search.hybrid:read:calls", "search.hybrid:read:people"].iter().any(|a| abilities.iter().any(|b| b == a));
+    let crm_ask = async {
+        if crm_open {
+            Some(find(abilities.to_vec(), k, vec!["calls".into(), "people".into()]).await)
+        } else {
+            None
         }
     };
     let mesh = async {
@@ -426,12 +816,21 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
         let r = c.call::<mesh_api::Mesh>(&mesh_api::MeshReq { q: q.into(), k, deadline_ms: 2500, sources: vec![] }).await.map_err(|e| e.to_string())?;
         r.map_err(|e| format!("{e:?}"))
     };
-    let (h, p, m) = tokio::join!(
+    // cell.search: every registered cell ranked by meaning and text, each with its trust record (Network group)
+    let cellq = async {
+        for_cell(abilities, "cell.search", "cell.search:search").ok_or("not open to you".to_string())?;
+        let c = client::<cell_search_api::CellSearch>(person, abilities).await?;
+        let r = c.call::<cell_search_api::Search>(&cell_search_api::SearchReq { q: q.into(), k }).await.map_err(|e| e.to_string())?;
+        r.map_err(|e| format!("{e:?}"))
+    };
+    let (h, p, m, cs, cr) = tokio::join!(
         tokio::time::timeout(Duration::from_secs(22), hybrid),
         tokio::time::timeout(Duration::from_secs(22), public_ask),
-        tokio::time::timeout(Duration::from_secs(12), mesh)
+        tokio::time::timeout(Duration::from_secs(12), mesh),
+        tokio::time::timeout(Duration::from_secs(12), cellq),
+        tokio::time::timeout(Duration::from_secs(22), crm_ask)
     );
-    let (mut private, mut network, mut public, mut notes) = (vec![], vec![], vec![], vec![]);
+    let (mut private, mut network, mut public, mut notes, mut cells, mut crm) = (vec![], vec![], vec![], vec![], vec![], vec![]);
     let hrow = |x: &hybrid_api::Hit| {
         json!({"title": x.title, "snippet": x.snippet, "source": x.source, "machine": x.machine, "path": x.path,
             "score": x.score, "open": open_of(&x.source, "", &x.path, ""), "from": "search.hybrid"})
@@ -461,7 +860,7 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
     match m {
         Ok(Ok(r)) => {
             notes.push(json!({"cell": "search.mesh", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64, "answered": r.answered, "asked": r.asked,
-                "nodes": r.nodes.iter().map(|n| json!({"node": n.node, "ok": n.ok, "hits": n.hits})).collect::<Vec<_>>()}));
+                "nodes": r.nodes.iter().map(|n| json!({"node": n.node, "ok": n.ok, "hits": n.hits, "took_ms": n.took_ms as u64, "err": n.err.chars().take(120).collect::<String>()})).collect::<Vec<_>>()}));
             for x in r.hits {
                 let first = x.locations.first();
                 let (machine, path) = first.map(|l| (l.node.clone(), l.path.clone())).unwrap_or_default();
@@ -473,11 +872,46 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
         Ok(Err(e)) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": e.chars().take(200).collect::<String>()})),
         Err(_) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": "no answer in 12 s"})),
     }
+    match cr {
+        Ok(None) => {}
+        Ok(Some(Ok(r))) => {
+            notes.push(json!({"cell": "search.hybrid", "ask": "crm", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64}));
+            crm = r.hits.iter().filter(|x| group_of(&x.acl) == "private").map(hrow).collect();
+        }
+        Ok(Some(Err(e))) => notes.push(json!({"cell": "search.hybrid", "ask": "crm", "ok": false, "err": e.chars().take(200).collect::<String>()})),
+        Err(_) => notes.push(json!({"cell": "search.hybrid", "ask": "crm", "ok": false, "err": "no answer in 22 s"})),
+    }
+    match cs {
+        Ok(Ok(r)) => {
+            notes.push(json!({"cell": "cell.search", "ok": true, "hits": r.hits.len(), "took_ms": r.took_us / 1000, "indexed": r.indexed}));
+            for x in r.hits.into_iter().take(k as usize) {
+                let t = &x.trust;
+                let mut trust = vec![if t.signer == "ours" { "signed by ce-net".to_string() } else { format!("{} signer", t.signer) }];
+                if !t.review.is_empty() {
+                    trust.push(format!("review {}", t.review));
+                }
+                if !t.advisories.is_empty() {
+                    trust.push(format!("{} advisories", t.advisories.len()));
+                }
+                let ops: Vec<&str> = x.ops.iter().map(|o| o.name.as_str()).filter(|n| *n != "HealthOp").take(6).collect();
+                cells.push(json!({"title": if x.title.is_empty() || x.title == x.api { x.api.clone() } else { format!("{} · {}", x.api, x.title) },
+                    "snippet": x.about, "source": "cell.search", "kind": "cell", "machine": format!("running on {}", x.running_on),
+                    "path": format!("{}{}", x.repo, if ops.is_empty() { String::new() } else { format!(" · ops {}", ops.join(", ")) }),
+                    "trust": trust, "score": x.score, "open": open_of("cells", "cell", "", &x.api), "from": "cell.search"}));
+            }
+        }
+        Ok(Err(e)) => notes.push(json!({"cell": "cell.search", "ok": false, "err": e.chars().take(200).collect::<String>()})),
+        Err(_) => notes.push(json!({"cell": "cell.search", "ok": false, "err": "no answer in 12 s"})),
+    }
     let key = |v: &serde_json::Value| format!("{}\n{}\n{}", v["path"], v["title"], v["machine"]);
     let n = k as usize;
-    let (mut private, mut network, mut public) = (first_unique(private, n, key), first_unique(network, n, key), first_unique(public, n, key));
-    pin_links(&mut [&mut private, &mut network, &mut public]).await;
-    json!({"q": q, "per_group": k, "private": private, "network": network, "public": public,
+    // one row a record: crm.rs and search-hybrid-collect both index a call or person (crm/calls/<id>, calls/<id>)
+    let crm = first_unique(crm, n, |v| v["open"].as_str().map(String::from).unwrap_or_else(|| key(v)));
+    let in_crm: std::collections::BTreeSet<String> = crm.iter().map(key).collect();
+    let private: Vec<serde_json::Value> = private.into_iter().filter(|v| !in_crm.contains(&key(v))).collect();
+    let (mut private, mut network, mut public, mut crm) = (first_unique(private, n, key), first_unique(network, n, key), first_unique(public, n, key), crm);
+    pin_links(&mut [&mut private, &mut network, &mut public, &mut crm]).await;
+    json!({"q": q, "per_group": k, "private": private, "network": network, "cells": cells, "crm": crm, "public": public,
         "notes": notes, "took_ms": t0.elapsed().as_millis() as u64})
 }
 
@@ -699,6 +1133,12 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
             let k = query(path, "k").and_then(|k| k.parse().ok()).unwrap_or(PER_GROUP).clamp(1, 50);
             ("200 OK", json(&search(person, abilities, q, k).await))
         }
+        "/api/rec" if has("/search/") => {
+            let r = query_text(path, "r").unwrap_or_default();
+            let q = query_text(path, "q").unwrap_or_default();
+            let (st, body) = view_rec(person, abilities, r.trim(), q.trim()).await;
+            (st, json(&body))
+        }
         "/api/ref" if has("/search/") => {
             let r = query_text(path, "r").unwrap_or_default();
             let (st, body) = view_ref(person, abilities, r.trim()).await;
@@ -855,5 +1295,14 @@ mod contracts {
         assert_eq!(<super::mesh_api::SearchMesh as ce_wire::Api>::SCHEMA, 0xb78f3a1097281268);
         assert_eq!(format!("{:016x}", <super::ref_resolve_api::RefResolve as ce_wire::Api>::SCHEMA), REF_RESOLVE);
         assert_eq!(format!("{:016x}", <super::ref_pin_api::RefPin as ce_wire::Api>::SCHEMA), REF_PIN);
+    }
+    /// cell.search, crm.people, crm.promises and crm.calls as foreman-ops-1's door listed them (`ce cell ops <api>
+    /// --json`, 2026-11-17).
+    #[test]
+    fn copied_cell_and_crm_contracts_match_the_live_cells() {
+        assert_eq!(<super::cell_search_api::CellSearch as ce_wire::Api>::SCHEMA, 0x86ace76bede120b1);
+        assert_eq!(<super::crm_people_api::CrmPeople as ce_wire::Api>::SCHEMA, 0x448ba80c84fc9d29);
+        assert_eq!(<super::crm_promises_api::CrmPromises as ce_wire::Api>::SCHEMA, 0xb536f482fae0a492);
+        assert_eq!(<super::crm_calls_api::CrmCalls as ce_wire::Api>::SCHEMA, 0x75a354c0af4a012f);
     }
 }
