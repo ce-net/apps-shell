@@ -34,15 +34,18 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint",
     "wire.ws-door:mint-for:approve.inbox",
     "wire.ws-door:mint-for:site.cellmap",
+    "wire.ws-door:mint-for:search.hybrid",
+    "wire.ws-door:mint-for:search.mesh",
     "approve.inbox:health",
     "site.cellmap:health",
     "foreman.shell:health",
     "cr.shell:health",
+    "search.hybrid:health",
     "delegate:1",
 ];
 
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
-pub const DATA_CELLS: &[&str] = &["approve.inbox", "site.cellmap"];
+pub const DATA_CELLS: &[&str] = &["approve.inbox", "site.cellmap", "search.hybrid", "search.mesh"];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
 pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
@@ -57,7 +60,56 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
 }
 
 /// Leif's abilities when the people file does not name him.
-pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs"];
+pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs", "search.hybrid:find", "search.mesh:find"];
+
+/// The Search tab's private reads: search.hybrid opens a private label only for an ability naming it exactly (its
+/// lib.rs PRIVATE), and every repo by the exact `read:repos`. A viewer's search carries only the ones they hold.
+pub const SEARCH_PRIVATE: &[&str] = &[
+    "search.hybrid:read:repos",
+    "search.hybrid:read:words",
+    "search.hybrid:read:mail",
+    "search.hybrid:read:goals",
+    "search.hybrid:read:rooms",
+    "search.hybrid:read:inbox",
+    "search.hybrid:read:calls",
+    "search.hybrid:read:people",
+];
+
+/// Which group a search.hybrid hit belongs to on the Search tab: `global` for what cells published for everyone (acl
+/// `public`) and capabilities anyone may read, else `private` (only a viewer whose exact grant read it got it at all).
+pub fn group_of(acl: &str) -> &'static str {
+    if acl == "public" || acl == "caps:mesh" {
+        "global"
+    } else {
+        "private"
+    }
+}
+
+/// Where a search hit opens on or off apps.ce-net.com: a repo file on GitHub (`<repo>/<file>` under a machine's dev
+/// dir), a cell in the Core tab, a goal, room or inbox item in Foreman, a GitHub origin as itself. None: no screen yet.
+pub fn open_of(source: &str, kind: &str, path: &str, key: &str) -> Option<String> {
+    let ok = |s: &str| !s.is_empty() && !s.starts_with('.') && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if kind == "cell" || source == "cells" || path.starts_with("cells.catalog/") || path.starts_with("caps/cell/") {
+        return Some("/core/".into());
+    }
+    if ["goals", "rooms", "inbox", "calls", "words"].contains(&source) {
+        return Some("/foreman/".into());
+    }
+    if let Some(r) = key.strip_prefix("https://github.com/") {
+        let r = r.trim_end_matches(".git").trim_end_matches('/');
+        if r.split('/').count() == 2 && r.split('/').all(ok) {
+            return Some(format!("https://github.com/{r}"));
+        }
+    }
+    if source == "files" || kind == "repo" || kind == "doc" {
+        let p = path.trim_start_matches("~/dev/").trim_start_matches("dev/");
+        let (repo, rest) = p.split_once('/').unwrap_or((p, ""));
+        if ok(repo) && (rest.is_empty() || rest.split('/').all(ok)) {
+            return Some(if rest.is_empty() { format!("https://github.com/Leif-Rydenfalk/{repo}") } else { format!("https://github.com/Leif-Rydenfalk/{repo}/blob/HEAD/{rest}") });
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Person {
@@ -128,6 +180,7 @@ pub fn view_of(route: &str) -> Option<&'static str> {
     match route {
         "/approvals/" => Some("v/approvals.js"),
         "/core/" => Some("v/core.js"),
+        "/search/" => Some("v/search.js"),
         _ => None,
     }
 }

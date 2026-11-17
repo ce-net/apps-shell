@@ -143,7 +143,7 @@ dependencies = [
 [[package]]
 name = "ce-net-net"
 version = "0.1.0"
-source = "git+https://github.com/ce-net/ce-net-net?rev=1e39b62f509c3644f5b0902a72c1601eb14bcac5#1e39b62f509c3644f5b0902a72c1601eb14bcac5"
+source = "git+https://github.com/ce-net/ce-net-net?rev=5c8a3fdba12ab872cdbcf65ae0534b757078a3e5#5c8a3fdba12ab872cdbcf65ae0534b757078a3e5"
 dependencies = [
  "cell-net",
 ]

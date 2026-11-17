@@ -18,7 +18,8 @@ fn tabs_follow_the_chain() {
     assert!(routes(&[]).is_empty(), "no rights: no tabs");
     assert_eq!(routes(&["approve.inbox:read", "approve.inbox:where:requester=t-approver"]), ["/approvals/"]);
     assert_eq!(routes(&["approve.inbox:read", "cr.shell:open"]), ["/approvals/", "/control-room/"]);
-    assert_eq!(routes(ROOT), ["/foreman/", "/approvals/", "/control-room/", "/core/"]);
+    assert_eq!(routes(ROOT), ["/foreman/", "/search/", "/approvals/", "/control-room/", "/core/"]);
+    assert_eq!(routes(&["search.hybrid:find"]), ["/search/"], "the Search tab needs only search.hybrid:find");
     assert!(routes(&["approve.inbox:where:requester=x"]).is_empty(), "a caveat alone opens nothing");
 }
 
@@ -28,7 +29,7 @@ fn a_tab_whose_shell_stopped_answering_is_gone() {
     let mut live = all_live(now);
     live.insert("approve.inbox".into(), now - LIVE_MS - 1);
     let r: Vec<String> = tabs_for(&s(ROOT), &live, now).into_iter().map(|t| t.route).collect();
-    assert_eq!(r, ["/foreman/", "/control-room/", "/core/"]);
+    assert_eq!(r, ["/foreman/", "/search/", "/control-room/", "/core/"]);
     live.remove("site.cellmap");
     assert!(!tabs_for(&s(ROOT), &live, now).iter().any(|t| t.route == "/core/"), "never answered: no tab");
 }
@@ -69,4 +70,45 @@ fn a_viewer_grant_carries_only_data_cell_rights_with_their_caveats() {
         assert!(GRANT.contains(&format!("wire.ws-door:mint-for:{c}").as_str()));
     }
     assert!(!GRANT.iter().any(|g| g.contains('*') || g.ends_with(":read")), "the shell holds no data right itself");
+}
+
+#[test]
+fn the_search_tab_is_live_only_while_search_hybrid_answers() {
+    let now = 1_000_000;
+    let mut live = all_live(now);
+    let has = |l: &BTreeMap<String, u64>| tabs_for(&s(&["search.hybrid:find"]), l, now).iter().any(|t| t.route == "/search/");
+    assert!(has(&live));
+    live.insert("search.hybrid".into(), now - LIVE_MS - 1);
+    assert!(!has(&live), "index not answering: no Search tab");
+    assert_eq!(view_of("/search/"), Some("v/search.js"));
+}
+
+#[test]
+fn private_reads_ride_only_for_a_viewer_who_holds_them() {
+    // a viewer with only find: the minted grant carries find, nothing private, so search.hybrid shows only `public`
+    let stranger = s(&["search.hybrid:find", "search.mesh:find"]);
+    assert_eq!(viewer_grant(&stranger), s(&["search.hybrid:find", "search.mesh:find"]));
+    assert!(!viewer_grant(&stranger).iter().any(|a| SEARCH_PRIVATE.contains(&a.as_str())));
+    // the owner: exactly his named reads, never a wildcard
+    let mut owner = stranger.clone();
+    owner.extend(SEARCH_PRIVATE.iter().map(|a| a.to_string()));
+    owner.push("search.hybrid:read:repo:*".into());
+    let g = viewer_grant(&owner);
+    assert!(SEARCH_PRIVATE.iter().all(|a| g.contains(&a.to_string())));
+    assert!(!g.iter().any(|a| a.contains('*')));
+}
+
+#[test]
+fn hits_group_and_open_where_they_live() {
+    assert_eq!(group_of("public"), "global");
+    assert_eq!(group_of("caps:mesh"), "global");
+    for acl in ["words", "mail", "people", "repo:feed-search", "owner:abc", "grant:x:y", ""] {
+        assert_eq!(group_of(acl), "private", "{acl}");
+    }
+    assert_eq!(open_of("files", "", "fire-spread/README.md", "").as_deref(), Some("https://github.com/Leif-Rydenfalk/fire-spread/blob/HEAD/README.md"));
+    assert_eq!(open_of("", "repo", "~/dev/ce-search", "https://github.com/Leif-Rydenfalk/ce-search.git").as_deref(), Some("https://github.com/Leif-Rydenfalk/ce-search"));
+    assert_eq!(open_of("", "cell", "x", "search.hybrid").as_deref(), Some("/core/"));
+    assert_eq!(open_of("goals", "", "goals/x", "").as_deref(), Some("/foreman/"));
+    assert_eq!(open_of("mail", "", "mail/123", ""), None);
+    assert_eq!(open_of("files", "", "../etc/passwd", ""), None);
 }

@@ -1,12 +1,14 @@
 //! `apps-shell serve`: the apps.shell cell behind this machine's door, its liveness loop, and its gateway face.
 //!
 //! The face listens on loopback once per tab route it serves (`$APPS_SHELL_HTTP`, default
-//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
+//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
 //! the prefix cut and the person signed (`X-Ce-Person*`, the gate's per-host key, repo:ui-cells site-gateway's check).
 //! - `GET /` the page (the same bytes for everyone; it names no system), `/_k/*` the kit;
 //! - `GET /tabs.json` this viewer's tabs: allowed by their abilities and live (their shell answered HealthOp by name
 //!   within LIVE_MS; asked every PROBE_MS); a tab's `view` only when this site carries it;
 //! - `GET /v/<tab>.js` a tab's view module, only to a viewer whose tabs include that tab (404 to anyone else);
+//! - `GET /api/search?q=<words>`: the Search tab, search.hybrid `Find` (private by the viewer's exact read grants, and
+//!   what cells published) and search.mesh `Mesh` (every node's own index) at once, grouped private / global;
 //! - `GET /api/inbox`, `/api/card?b=<id>`, `/api/cellmap`: the data cells called by name with a token attenuated
 //!   from this cell's grant to exactly the viewer's abilities in that cell (their row caveats included), so the data
 //!   cell's own gate decides, for this viewer.
@@ -59,6 +61,7 @@ async fn shell_ok(shell: &str) -> bool {
         "site.cellmap" => health!(site_cellmap_api::SiteCellmap, site_cellmap_api::HealthOp, "site.cellmap:health"),
         "foreman.shell" => health!(foreman_shell_api::ForemanShell, foreman_shell_api::HealthOp, "foreman.shell:health"),
         "cr.shell" => health!(cr_shell_api::CrShell, cr_shell_api::HealthOp, "cr.shell:health"),
+        "search.hybrid" => health!(hybrid_api::SearchHybrid, hybrid_api::HealthOp, "search.hybrid:health"),
         // a shell whose contract this build does not carry yet: never live here (its system shows in site.cellmap)
         _ => None,
     };
@@ -124,6 +127,28 @@ fn file(name: &str) -> Option<&'static [u8]> {
     site::SITE.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
 }
 
+/// A query value with `+` and `%xx` decoded (None when it is not UTF-8).
+fn query_text(path: &str, k: &str) -> Option<String> {
+    let raw = query(path, k)?;
+    let b = raw.as_bytes();
+    let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
+    while i < b.len() {
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < b.len() => match std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                Some(v) => {
+                    out.push(v);
+                    i += 2;
+                }
+                None => out.push(b'%'),
+            },
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8(out).ok()
+}
+
 fn query(path: &str, k: &str) -> Option<String> {
     let q = path.split_once('?')?.1;
     q.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, v)| v.to_string()))
@@ -169,6 +194,135 @@ mod door_api {
             2 => Mint(MintReq) -> Result<Minted, MintError>, needs "wire.ws-door:mint";
         }
     }
+}
+
+/// search.hybrid's contract (repo:search-hybrid crates/search-hybrid-api, major 1), copied verbatim like door_api:
+/// its doc comments are part of the schema hash (2e6c7e98274d467f), so not a character may change.
+#[allow(dead_code)]
+mod hybrid_api {
+    ce_wire::api! {
+        api SearchHybrid = "search.hybrid", version 1;
+        types {
+            /// Health contract: these three fields, in this order, in every cell.
+            pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+            /// `q` in plain words. `k` 0 = 10, at most 50. `sources` narrows to "files", "words" and/or "mail"; empty = all
+            /// the caller may read. `rerank` false skips the cross-encoder (faster, rougher).
+            pub struct FindReq { pub q: String, pub k: u32, pub sources: Vec<String>, pub rerank: bool }
+            /// One document (best chunk per path). `id` is "<source>:<machine>:<path>"; `path` is relative to the
+            /// machine's dev dir for files. `bm25_rank` / `vec_rank`: 1-based place in each list, 0 = not in it. `acl`: the
+            /// label whose right let this caller see it.
+            pub struct Hit { pub id: String, pub source: String, pub machine: String, pub path: String, pub title: String,
+                             pub snippet: String, pub score: f32, pub bm25_rank: u32, pub vec_rank: u32, pub acl: String }
+            pub struct FindResp { pub hits: Vec<Hit>, pub took_ms: f64, pub chunks: u32, pub reranked: bool, pub model: String }
+            pub struct StatRow { pub source: String, pub machine: String, pub docs: u32, pub chunks: u32 }
+            /// `built_ms`: when the index on disk was built (epoch ms).
+            pub struct StatsResp { pub chunks: u32, pub docs: u32, pub built_ms: u64, pub model: String, pub reranker: String, pub rows: Vec<StatRow> }
+            pub enum FindError { Invalid(String), NotReady(String), Failed(String) }
+        }
+        ops {
+            1 => HealthOp(()) -> Health, needs "search.hybrid:health";
+            // Only the docs the caller's abilities read: `search.hybrid:read:<acl>` for acl `repo:<name>`, `words` (Leif's
+            // talk log), `mail`; ce-cap wildcards (`search.hybrid:read:repo:*`, `search.hybrid:*`, `*`) cover repos only, words
+            // and mail need a grant naming them. No ability = no hits;
+            // a doc without an acl is shown to nobody; key-like values are masked at crawl. `chunks` counts visible ones.
+            2 => Find(FindReq) -> Result<FindResp, FindError>, needs "search.hybrid:find", deadline_ms 20000;
+            // Counts of what the caller can read, nothing else.
+            4 => Stats(()) -> StatsResp, needs "search.hybrid:stats";
+        }
+    }
+}
+
+/// search.mesh's contract (repo:ce-search crates/search-mesh-api, major 1), copied verbatim like door_api (schema
+/// b78f3a1097281268).
+#[allow(dead_code)]
+mod mesh_api {
+    ce_wire::api! {
+        api SearchMesh = "search.mesh", version 1;
+        types {
+            /// Health contract: these three fields, in this order, in every cell.
+            pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+            /// `q` in plain words; at most `k` hits (0 = 20); `sources`: source keys to ask (`Sources` lists them), empty = all.
+            pub struct LocalReq { pub q: String, pub k: u32, pub sources: Vec<String> }
+            /// One thing this node holds. `source`: which local source found it; `kind`: repo, cell, doc or page; `key`:
+            /// the same on every node for the same thing (a repo's origin, a cell's api, a doc's repo and path), the
+            /// merge joins on it; `machine`: where it lives (the answering node unless its index says another machine);
+            /// `path`: where on that machine (`~` is that machine's home); `how`: the call or command that uses it.
+            pub struct Hit { pub source: String, pub kind: String, pub key: String, pub title: String, pub snippet: String, pub score: f64, pub machine: String, pub path: String, pub how: String }
+            /// One local source's part: how many hits, how long, and why it did not answer (empty when it did).
+            pub struct SourceNote { pub key: String, pub hits: u32, pub took_ms: f64, pub err: String }
+            /// `node`: this node's name; `indexed`: things in its own index; `age_s`: how old that index is.
+            pub struct LocalResp { pub node: String, pub hits: Vec<Hit>, pub sources: Vec<SourceNote>, pub indexed: u32, pub age_s: u64, pub took_ms: f64 }
+            /// `deadline_ms`: how long any node may take (0 = 800); a node that has not answered by then is reported, not waited for.
+            pub struct MeshReq { pub q: String, pub k: u32, pub deadline_ms: u32, pub sources: Vec<String> }
+            /// One place a result lives and how to use it there.
+            pub struct Location { pub node: String, pub path: String, pub how: String }
+            /// One merged result: `score` 0..1 after normalisation; `locations`: every node that holds it.
+            pub struct Merged { pub kind: String, pub key: String, pub title: String, pub snippet: String, pub score: f64, pub locations: Vec<Location>, pub sources: Vec<String> }
+            /// One node's part in a query. `ok` false: `err` says why (no answer before the deadline, refused, unreachable).
+            pub struct NodeAnswer { pub node: String, pub id: String, pub addr: String, pub ok: bool, pub hits: u32, pub took_ms: f64, pub err: String }
+            /// `answered` of `asked` nodes answered; `text` is the answer as the `ce-search` CLI prints it.
+            pub struct MeshResp { pub q: String, pub hits: Vec<Merged>, pub nodes: Vec<NodeAnswer>, pub answered: u32, pub asked: u32, pub took_ms: f64, pub text: String }
+            pub struct SourceInfo { pub key: String, pub reads: String }
+            pub enum SearchError { Invalid(String), Limited(String), Failed(String) }
+        }
+        ops {
+            1 => HealthOp(()) -> Health, needs "search.mesh:health";
+            // This node's own index only; never asks another node.
+            2 => Local(LocalReq) -> Result<LocalResp, SearchError>, needs "search.mesh:local", deadline_ms 5000;
+            // Every reachable node's Local at once, merged.
+            3 => Mesh(MeshReq) -> Result<MeshResp, SearchError>, needs "search.mesh:find", deadline_ms 10000;
+            4 => Sources(()) -> Vec<SourceInfo>, needs "search.mesh:read";
+        }
+    }
+}
+
+/// One search over both: search.hybrid as the viewer (their exact private reads ride in the minted grant) and
+/// search.mesh's merged answer from every node, at once. A side that fails is named in `notes`, never the whole answer.
+async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_json::Value {
+    use serde_json::json;
+    let t0 = Instant::now();
+    let hybrid = async {
+        for_cell(abilities, "search.hybrid", "search.hybrid:find").ok_or("not open to you".to_string())?;
+        let c = client::<hybrid_api::SearchHybrid>(person, abilities).await?;
+        let r = c.call::<hybrid_api::Find>(&hybrid_api::FindReq { q: q.into(), k, sources: vec![], rerank: true }).await.map_err(|e| e.to_string())?;
+        r.map_err(|e| format!("{e:?}"))
+    };
+    let mesh = async {
+        for_cell(abilities, "search.mesh", "search.mesh:find").ok_or("not open to you".to_string())?;
+        let c = client::<mesh_api::SearchMesh>(person, abilities).await?;
+        let r = c.call::<mesh_api::Mesh>(&mesh_api::MeshReq { q: q.into(), k, deadline_ms: 2500, sources: vec![] }).await.map_err(|e| e.to_string())?;
+        r.map_err(|e| format!("{e:?}"))
+    };
+    let (h, m) = tokio::join!(tokio::time::timeout(Duration::from_secs(22), hybrid), tokio::time::timeout(Duration::from_secs(12), mesh));
+    let (mut private, mut global, mut notes) = (vec![], vec![], vec![]);
+    match h {
+        Ok(Ok(r)) => {
+            notes.push(json!({"cell": "search.hybrid", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64, "reranked": r.reranked}));
+            for x in r.hits {
+                let row = json!({"title": x.title, "snippet": x.snippet, "source": x.source, "machine": x.machine, "path": x.path,
+                    "score": x.score, "open": open_of(&x.source, "", &x.path, ""), "from": "search.hybrid"});
+                if group_of(&x.acl) == "global" { global.push(row) } else { private.push(row) }
+            }
+        }
+        Ok(Err(e)) => notes.push(json!({"cell": "search.hybrid", "ok": false, "err": e.chars().take(200).collect::<String>()})),
+        Err(_) => notes.push(json!({"cell": "search.hybrid", "ok": false, "err": "no answer in 22 s"})),
+    }
+    match m {
+        Ok(Ok(r)) => {
+            notes.push(json!({"cell": "search.mesh", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64, "answered": r.answered, "asked": r.asked,
+                "nodes": r.nodes.iter().map(|n| json!({"node": n.node, "ok": n.ok, "hits": n.hits})).collect::<Vec<_>>()}));
+            for x in r.hits {
+                let first = x.locations.first();
+                let (machine, path) = first.map(|l| (l.node.clone(), l.path.clone())).unwrap_or_default();
+                global.push(json!({"title": x.title, "snippet": x.snippet, "source": x.sources.join(", "), "kind": x.kind, "machine": machine, "path": path,
+                    "also": x.locations.iter().skip(1).map(|l| l.node.clone()).collect::<Vec<_>>(), "score": x.score,
+                    "open": open_of("", &x.kind, &path, &x.key), "from": "search.mesh"}));
+            }
+        }
+        Ok(Err(e)) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": e.chars().take(200).collect::<String>()})),
+        Err(_) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": "no answer in 12 s"})),
+    }
+    json!({"q": q, "private": private, "global": global, "notes": notes, "took_ms": t0.elapsed().as_millis() as u64})
 }
 
 /// One viewer's grant, minted by the node through wire.ws-door: its key and chain, for exactly `abilities`.
@@ -313,6 +467,15 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
                 Err(e) => down(e),
             }
         }
+        "/api/search" if has("/search/") => {
+            let q = query_text(path, "q").unwrap_or_default();
+            let q = q.trim();
+            if q.is_empty() || q.chars().count() > 300 {
+                return ("400 Bad Request", b"{\"error\":\"q: 1 to 300 characters\"}".to_vec());
+            }
+            let k = query(path, "k").and_then(|k| k.parse().ok()).unwrap_or(20u32).clamp(1, 50);
+            ("200 OK", json(&search(person, abilities, q, k).await))
+        }
         _ => refused,
     }
 }
@@ -401,7 +564,7 @@ async fn serve() -> Result<(), String> {
     tokio::spawn(liveness(live.clone()));
     let person_key: PathBuf = env_or("CE_GATE_PERSON_KEY", format!("{}/.config/work-show/person-key", home())).into();
     let people: PathBuf = env_or("APPS_SHELL_PEOPLE", format!("{}/.config/apps-shell/people.json", home())).into();
-    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/".into()).split(',') {
+    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/".into()).split(',') {
         let (addr, route) = pair.split_once('=').ok_or_else(|| format!("APPS_SHELL_HTTP: {pair}: want <addr>=<route>"))?;
         let f = Arc::new(Face { route: route.into(), live: live.clone(), person_key: person_key.clone(), people: people.clone() });
         let addr = addr.to_string();
@@ -450,5 +613,15 @@ fn main() {
     if let Err(e) = r {
         eprintln!("apps-shell: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod contracts {
+    /// The copies must hash as the live cells do, or every call is refused as another api.
+    #[test]
+    fn copied_search_contracts_match_the_live_cells() {
+        assert_eq!(<super::hybrid_api::SearchHybrid as ce_wire::Api>::SCHEMA, 0x2e6c7e98274d467f);
+        assert_eq!(<super::mesh_api::SearchMesh as ce_wire::Api>::SCHEMA, 0xb78f3a1097281268);
     }
 }

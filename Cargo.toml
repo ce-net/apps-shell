@@ -12,7 +12,7 @@ ce-wire = { git = "https://github.com/Leif-Rydenfalk/rust-stack", rev = "d283bd5
 ce-gate = { git = "https://github.com/Leif-Rydenfalk/rust-stack", rev = "d283bd528f96effabcf4dec56eb4fad1bec08d27" }
 ui-chain = { git = "https://github.com/ce-net/ui-cells", rev = "103703220a8554d07af1ed6a1eea5ef0e5a72090" }
 site-gateway = { git = "https://github.com/ce-net/ui-cells", rev = "103703220a8554d07af1ed6a1eea5ef0e5a72090" }
-ce-net-net = { git = "https://github.com/ce-net/ce-net-net", rev = "1e39b62f509c3644f5b0902a72c1601eb14bcac5" }
+ce-net-net = { git = "https://github.com/ce-net/ce-net-net", rev = "5c8a3fdba12ab872cdbcf65ae0534b757078a3e5" }
 # the tab shells and data cells, pinned by commit (this site's cell.lock)
 approve-inbox-api = { git = "https://github.com/ce-net/approve-inbox", rev = "6d931c830ce6406325d786ce457c83b013314adf" }
 site-cellmap-api = { git = "https://github.com/ce-net/site-cellmap", rev = "db2468894150662ca466e60cb4e523d39e74d0d8" }
