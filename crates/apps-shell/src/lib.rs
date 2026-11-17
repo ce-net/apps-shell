@@ -36,6 +36,8 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint-for:site.cellmap",
     "wire.ws-door:mint-for:search.hybrid",
     "wire.ws-door:mint-for:search.mesh",
+    "wire.ws-door:mint-for:ref.resolve",
+    "wire.ws-door:mint-for:ref.pin",
     "approve.inbox:health",
     "site.cellmap:health",
     "foreman.shell:health",
@@ -45,7 +47,7 @@ pub const GRANT: &[&str] = &[
 ];
 
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
-pub const DATA_CELLS: &[&str] = &["approve.inbox", "site.cellmap", "search.hybrid", "search.mesh"];
+pub const DATA_CELLS: &[&str] = &["approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin"];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
 pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
@@ -60,7 +62,7 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
 }
 
 /// Leif's abilities when the people file does not name him.
-pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs", "search.hybrid:find", "search.mesh:find"];
+pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs", "search.hybrid:find", "search.mesh:find", "ref.resolve:read", "ref.pin:read"];
 
 /// The Search tab's private reads: search.hybrid opens a private label only for an ability naming it exactly (its
 /// lib.rs PRIVATE), and every repo by the exact `read:repos`. A viewer's search carries only the ones they hold.
@@ -85,30 +87,80 @@ pub fn group_of(acl: &str) -> &'static str {
     }
 }
 
-/// Where a search hit opens on or off apps.ce-net.com: a repo file on GitHub (`<repo>/<file>` under a machine's dev
-/// dir), a cell in the Core tab, a goal, room or inbox item in Foreman, a GitHub origin as itself. None: no screen yet.
+/// How many hits each group of the Search tab shows (Private, Network, Public each their own, so an owner's many
+/// private hits never push Public to 0).
+pub const PER_GROUP: u32 = 10;
+
+/// The abilities for the Search tab's public-only ask: `search.hybrid:find` alone, no private read, so search.hybrid
+/// answers only what cells published for everyone. None when the viewer holds no private read (their one ask is
+/// public-only already) or no find.
+pub fn public_only(abilities: &[String]) -> Option<Vec<String>> {
+    let find = "search.hybrid:find";
+    if !covers(abilities, find) || !abilities.iter().any(|a| a.starts_with("search.hybrid:read:")) {
+        return None;
+    }
+    Some(vec![find.to_string()])
+}
+
+/// Keep the first `n` rows whose `key` is not seen yet.
+pub fn first_unique<T>(rows: Vec<T>, n: usize, key: impl Fn(&T) -> String) -> Vec<T> {
+    let mut seen = std::collections::BTreeSet::new();
+    rows.into_iter().filter(|r| seen.insert(key(r))).take(n).collect()
+}
+
+fn name_ok(s: &str) -> bool {
+    !s.is_empty() && !s.starts_with('.') && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+}
+
+/// The ce-ref a repo or file hit names: `repo:<repo>/<path>` (repo:ce-ref-id grammar; the commit is left for the viewer
+/// to pin to the checkout ref.pin reads), or None for anything else. A repo itself names its README.md. `path` is where
+/// the hit lives (`~/dev/<repo>/<file>`, `dev/..` or `<repo>/<file>`); with no usable path a git origin in `key` gives
+/// the repo name (its last segment), never a guessed host.
+pub fn ref_of(source: &str, kind: &str, path: &str, key: &str) -> Option<String> {
+    if !(source == "files" || kind == "repo" || kind == "doc") {
+        return None;
+    }
+    let p = path.trim_start_matches("~/dev/").trim_start_matches("dev/").trim_end_matches('/');
+    let (repo, rest) = p.split_once('/').unwrap_or((p, ""));
+    let (repo, rest) = if name_ok(repo) {
+        (repo.to_string(), rest.to_string())
+    } else if kind == "repo" {
+        let r = key.trim_end_matches('/').trim_end_matches(".git").rsplit(['/', ':']).next().unwrap_or("").to_string();
+        (r, String::new())
+    } else {
+        return None;
+    };
+    if !name_ok(&repo) || !(rest.is_empty() || rest.split('/').all(name_ok)) {
+        return None;
+    }
+    Some(format!("repo:{repo}/{}", if rest.is_empty() { "README.md" } else { &rest }))
+}
+
+/// Where a search hit opens inside apps.ce-net.com: a repo or file in this tab's own ce-ref viewer (`/search/?ref=`,
+/// ref.resolve and ref.pin asked as the viewer), a cell in the Core tab, a goal, room or inbox item in Foreman. Never a
+/// GitHub link (Leif: references go through our cell reference system). None: no screen yet.
 pub fn open_of(source: &str, kind: &str, path: &str, key: &str) -> Option<String> {
-    let ok = |s: &str| !s.is_empty() && !s.starts_with('.') && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
     if kind == "cell" || source == "cells" || path.starts_with("cells.catalog/") || path.starts_with("caps/cell/") {
         return Some("/core/".into());
     }
     if ["goals", "rooms", "inbox", "calls", "words"].contains(&source) {
         return Some("/foreman/".into());
     }
-    if let Some(r) = key.strip_prefix("https://github.com/") {
-        let r = r.trim_end_matches(".git").trim_end_matches('/');
-        if r.split('/').count() == 2 && r.split('/').all(ok) {
-            return Some(format!("https://github.com/{r}"));
-        }
-    }
-    if source == "files" || kind == "repo" || kind == "doc" {
-        let p = path.trim_start_matches("~/dev/").trim_start_matches("dev/");
-        let (repo, rest) = p.split_once('/').unwrap_or((p, ""));
-        if ok(repo) && (rest.is_empty() || rest.split('/').all(ok)) {
-            return Some(if rest.is_empty() { format!("https://github.com/Leif-Rydenfalk/{repo}") } else { format!("https://github.com/Leif-Rydenfalk/{repo}/blob/HEAD/{rest}") });
-        }
-    }
-    None
+    // names are [A-Za-z0-9._-] and '/', ':' only (ref_of), so nothing needs escaping in a query value
+    ref_of(source, kind, path, key).map(|r| format!("/search/?ref={r}"))
+}
+
+/// A viewer link's ref, checked: `repo:<repo>/<path>` with an optional `@<commit>` (4 to 40 lowercase hex), names as
+/// in [`ref_of`]. -> (repo, path, commit).
+pub fn parse_view_ref(r: &str) -> Option<(String, String, Option<String>)> {
+    let rest = r.strip_prefix("repo:")?;
+    let (rp, commit) = match rest.rsplit_once('@') {
+        Some((rp, c)) if (4..=40).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => (rp, Some(c.to_string())),
+        Some(_) => return None,
+        None => (rest, None),
+    };
+    let (repo, path) = rp.split_once('/')?;
+    (name_ok(repo) && !path.is_empty() && path.split('/').all(name_ok)).then(|| (repo.to_string(), path.to_string(), commit))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -183,4 +235,21 @@ pub fn view_of(route: &str) -> Option<&'static str> {
         "/search/" => Some("v/search.js"),
         _ => None,
     }
+}
+
+/// A repo's real origin from a search.mesh key (the answering node read it from that checkout's git remote): an
+/// `https://` origin as it is, `git@<host>:<path>` as `https://<host>/<path>`; `.git` and credentials dropped. Never
+/// built from a name: a key that is not an origin gives None.
+pub fn origin_of(key: &str) -> Option<String> {
+    let k = key.trim().trim_end_matches('/').trim_end_matches(".git");
+    let (host, path) = if let Some(r) = k.strip_prefix("https://") {
+        let r = r.rsplit_once('@').map(|(_, h)| h).unwrap_or(r);
+        r.split_once('/')?
+    } else if let Some(r) = k.strip_prefix("git@") {
+        r.split_once(':')?
+    } else {
+        return None;
+    };
+    let host_ok = !host.is_empty() && host.contains('.') && host.chars().all(|c| c.is_ascii_alphanumeric() || "-.".contains(c));
+    (host_ok && !path.is_empty() && path.split('/').all(name_ok)).then(|| format!("https://{host}/{path}"))
 }

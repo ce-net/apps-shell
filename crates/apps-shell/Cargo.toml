@@ -24,7 +24,7 @@ ui-chain = { workspace = true }
 site-gateway = { workspace = true }
 ce-wire = { workspace = true, features = ["server", "client"] }
 ce-gate = { workspace = true }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "net", "io-util", "fs"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "net", "io-util", "fs", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

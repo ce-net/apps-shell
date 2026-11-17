@@ -106,10 +106,63 @@ fn hits_group_and_open_where_they_live() {
     for acl in ["words", "mail", "people", "repo:feed-search", "owner:abc", "grant:x:y", ""] {
         assert_eq!(group_of(acl), "private", "{acl}");
     }
-    assert_eq!(open_of("files", "", "fire-spread/README.md", "").as_deref(), Some("https://github.com/Leif-Rydenfalk/fire-spread/blob/HEAD/README.md"));
-    assert_eq!(open_of("", "repo", "~/dev/ce-search", "https://github.com/Leif-Rydenfalk/ce-search.git").as_deref(), Some("https://github.com/Leif-Rydenfalk/ce-search"));
+    // repos and files open in the Search tab's own ce-ref viewer, never on GitHub
+    assert_eq!(open_of("files", "", "fire-spread/README.md", "").as_deref(), Some("/search/?ref=repo:fire-spread/README.md"));
+    assert_eq!(open_of("", "repo", "~/dev/ce-search", "https://github.com/Leif-Rydenfalk/ce-search.git").as_deref(), Some("/search/?ref=repo:ce-search/README.md"));
+    assert_eq!(open_of("", "doc", "~/dev/ce-ref/docs/ADOPTION.md", "").as_deref(), Some("/search/?ref=repo:ce-ref/docs/ADOPTION.md"));
+    assert_eq!(open_of("", "repo", "", "https://github.com/ce-net/live-refs.git").as_deref(), Some("/search/?ref=repo:live-refs/README.md"));
+    assert_eq!(open_of("", "repo", "", "git@github.com:ce-net/ce-ref-id.git").as_deref(), Some("/search/?ref=repo:ce-ref-id/README.md"));
+    for (s, k, p, key) in [("files", "", "a/b", ""), ("", "repo", "~/dev/x", "https://github.com/a/x"), ("", "repo", "", "https://github.com/a/x.git"), ("", "doc", "x/y.md", "")] {
+        assert!(!open_of(s, k, p, key).unwrap_or_default().contains("github"), "{p} {key}");
+    }
     assert_eq!(open_of("", "cell", "x", "search.hybrid").as_deref(), Some("/core/"));
     assert_eq!(open_of("goals", "", "goals/x", "").as_deref(), Some("/foreman/"));
     assert_eq!(open_of("mail", "", "mail/123", ""), None);
     assert_eq!(open_of("files", "", "../etc/passwd", ""), None);
+}
+
+#[test]
+fn a_viewer_ref_is_checked_before_any_cell_is_asked() {
+    assert_eq!(parse_view_ref("repo:apps-shell/docs/SEARCH.md"), Some(("apps-shell".into(), "docs/SEARCH.md".into(), None)));
+    assert_eq!(parse_view_ref("repo:apps-shell/README.md@242f63a"), Some(("apps-shell".into(), "README.md".into(), Some("242f63a".into()))));
+    for bad in ["repo:../x/y", "repo:x/../etc/passwd", "repo:x/.git/config", "repo:x", "repo:x/", "repo:x/y@HEAD", "repo:x/y@-rf", "ce-ref://repo/ab/c", "repo:x/y z", "repo:x//y"] {
+        assert_eq!(parse_view_ref(bad), None, "{bad}");
+    }
+    // every link the hits make parses back
+    for (s, k, p, key) in [("files", "", "fire-spread/README.md", ""), ("", "repo", "~/dev/ce-search", ""), ("", "doc", "dev/ce-ref/docs/A.md", "")] {
+        let o = open_of(s, k, p, key).unwrap();
+        assert!(parse_view_ref(o.strip_prefix("/search/?ref=").unwrap()).is_some(), "{o}");
+    }
+}
+
+#[test]
+fn each_search_group_keeps_its_own_quota() {
+    assert_eq!(PER_GROUP, 10);
+    let owner: Vec<String> = ["search.hybrid:find", "search.mesh:find", "search.hybrid:read:mail"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(public_only(&owner), Some(vec!["search.hybrid:find".to_string()]));
+    let stranger = vec!["search.hybrid:find".to_string()];
+    assert_eq!(public_only(&stranger), None, "a stranger's one ask is public only already");
+    assert_eq!(public_only(&["search.hybrid:read:mail".to_string()]), None, "no find, no ask");
+    let rows: Vec<(u32, &str)> = (0..30).map(|i| (i, if i % 3 == 0 { "dup" } else { "x" })).collect();
+    let kept = first_unique(rows, 10, |r| if r.1 == "dup" { "dup".into() } else { r.0.to_string() });
+    assert_eq!(kept.len(), 10);
+    assert_eq!(kept.iter().filter(|r| r.1 == "dup").count(), 1);
+}
+
+#[test]
+fn the_ref_viewer_cells_are_minted_for_and_only_read() {
+    assert!(GRANT.contains(&"wire.ws-door:mint-for:ref.resolve") && GRANT.contains(&"wire.ws-door:mint-for:ref.pin"));
+    let g = viewer_grant(&["ref.resolve:read".into(), "ref.pin:read".into(), "ref.pin:write".into(), "ref.*".into()]);
+    assert!(g.contains(&"ref.pin:read".to_string()) && !g.iter().any(|a| a.contains('*')));
+    assert!(ROOT.contains(&"ref.pin:read") && !ROOT.iter().any(|a| a.ends_with(":write")));
+}
+
+#[test]
+fn a_fallback_origin_is_only_a_real_one() {
+    assert_eq!(origin_of("https://github.com/ce-net/live-refs.git").as_deref(), Some("https://github.com/ce-net/live-refs"));
+    assert_eq!(origin_of("git@github.com:ce-net/ce-ref-id.git").as_deref(), Some("https://github.com/ce-net/ce-ref-id"));
+    assert_eq!(origin_of("https://user:tok@git.example.org/a/b").as_deref(), Some("https://git.example.org/a/b"));
+    for k in ["ce-search", "search.hybrid", "~/dev/x", "http://github.com/a/b", "https://github.com/a/../b", "file:///x", ""] {
+        assert_eq!(origin_of(k), None, "{k}");
+    }
 }

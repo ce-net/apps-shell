@@ -1,11 +1,14 @@
 // The Search tab: one box over everything. Private: search.hybrid as this viewer (repos, talk log, mail, goals, rooms,
 // inbox, calls, people; only what the viewer's own exact grants read). Network: search.mesh's merged answer from every
 // node's own index of repos, cells and docs (internal). Public: what cells published for everyone. Each row says its source and machine and opens where
-// it lives. ?q= in the address keeps a search shareable with whoever may read the same.
+// it lives. ?q= in the address keeps a search shareable with whoever may read the same. A repo or file opens here, in
+// the ce-ref viewer (?ref=repo:<repo>/<path>): ref.resolve says where it lives and its hash, ref.pin hands over only
+// those bytes, both asked as this viewer. Never a GitHub link.
 export function mount(root, { h }) {
   if (!document.querySelector('link[data-search-css]')) document.head.append(h('link', { rel: 'stylesheet', href: '_k/search.css', 'data-search-css': true }));
-  let stop = false, seq = 0, show = 'all';
   const params = new URLSearchParams(location.search);
+  if (params.get('ref')) return viewRef(root, h, params.get('ref'));
+  let stop = false, seq = 0, show = 'all';
   const input = h('input', { type: 'search', name: 'q', class: 'q', placeholder: 'Repos, docs, people, goals, mail, cells', autocomplete: 'off', 'aria-label': 'Search', maxlength: '300' });
   input.value = params.get('q') || '';
   const form = h('form', { class: 'glass ticks searchbox', role: 'search', onsubmit: e => { e.preventDefault(); go(); } },
@@ -18,7 +21,7 @@ export function mount(root, { h }) {
 
   const row = x => h('div', { class: 'row hit' },
     h('div', {},
-      h('div', { class: 'l' }, x.open ? h('a', { href: x.open, target: x.open.startsWith('/') ? false : '_blank', rel: 'noopener' }, x.title || x.path) : (x.title || x.path)),
+      h('div', { class: 'l' }, x.open && (x.open.startsWith('/') || x.open.startsWith('https://')) ? h('a', { href: x.open, target: x.open.startsWith('/') ? false : '_blank', rel: 'noopener' }, x.title || x.path) : (x.title || x.path)),
       x.snippet ? h('div', { class: 'snip' }, x.snippet.slice(0, 260)) : null,
       h('div', { class: 'm' }, [x.path, x.also && x.also.length ? 'also on ' + x.also.join(', ') : ''].filter(Boolean).join(' · '))),
     h('div', { class: 'r on' }, h('span', { class: 'tag' }, x.kind || x.source || x.from), x.machine ? h('span', { class: 'tag acc' }, x.machine) : null));
@@ -64,5 +67,35 @@ export function mount(root, { h }) {
   }
   draw();
   if (input.value) go(); else input.focus();
+  return () => { stop = true; };
+}
+
+// The ce-ref viewer: one file through ref.resolve and ref.pin, as this viewer.
+function viewRef(root, h, ref) {
+  let stop = false;
+  const back = h('a', { class: 'btn', href: '/search/' + (document.referrer.includes('/search/?q=') ? new URL(document.referrer).search : '') }, 'Back to search');
+  const body = h('div', { class: 'refview', 'aria-live': 'polite' }, h('p', { class: 'note' }, 'Resolving ' + ref + ' through ref.resolve.'));
+  const name = ref.replace(/^repo:/, '');
+  root.replaceChildren(h('div', { class: 'crumb' }, 'ce / ', h('a', { href: '/search/' }, 'Search'), ' / ', h('b', {}, name)), h('h1', { class: 'display refname' }, name.split('/').pop()), body);
+  (async () => {
+    let d, st = 0;
+    try {
+      const r = await fetch('api/ref?r=' + encodeURIComponent(ref), { cache: 'no-store' });
+      st = r.status; d = await r.json().catch(() => ({ error: 'no answer (' + r.status + ')' }));
+    } catch (_) { d = { error: 'The viewer did not answer; try again.' }; }
+    if (stop) return;
+    if (st !== 200) { body.replaceChildren(h('p', { class: 'note' }, d.error || ('No answer (' + st + ').')), back); return; }
+    const kb = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
+    body.replaceChildren(
+      h('div', { class: 'glass list sys' },
+        h('h2', {}, h('b', {}, d.repo + '/' + d.path), h('span', {}, kb(d.size))),
+        h('div', { class: 'row' }, h('div', {}, h('div', { class: 'm' }, 'ce-ref'), h('div', { class: 'l mono' }, d.id))),
+        h('div', { class: 'row' }, h('div', {}, h('div', { class: 'm' }, 'pinned'), h('div', { class: 'l mono' }, d.ref))),
+        h('div', { class: 'row' }, h('div', {}, h('div', { class: 'm' }, 'lives on'), h('div', { class: 'l' }, d.node + ' · ' + d.source + ' · read by ' + d.via.join(' and '))))),
+      d.binary ? h('p', { class: 'note' }, 'A binary file (' + kb(d.size) + '); its bytes match ' + d.sha256 + '.')
+        : h('pre', { class: 'glass code', tabindex: '0' }, d.text),
+      d.truncated ? h('p', { class: 'note' }, 'Showing the first 512 KB.') : null,
+      back);
+  })();
   return () => { stop = true; };
 }

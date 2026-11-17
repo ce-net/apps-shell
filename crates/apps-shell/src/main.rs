@@ -10,6 +10,10 @@
 //! - `GET /api/search?q=<words>`: the Search tab, search.hybrid `Find` and search.mesh `Mesh` at once, in three groups:
 //!   `private` (search.hybrid by the viewer's exact read grants), `network` (search.mesh: every node's own index of
 //!   repos, cells and docs; internal, only with `search.mesh:find`) and `public` (what cells published for everyone);
+//!   each group its own [`PER_GROUP`] (default 10, `k=` 1 to 50): an owner's private hits never push Public to 0;
+//! - `GET /api/ref?r=repo:<repo>/<path>[@<commit>]`: the Search tab's file viewer, through the cell reference system
+//!   as the viewer: ref.resolve `Resolve` (where it lives, its ce-ref:// id and content hash) and ref.pin `Fetch` (only
+//!   the bytes with that hash); with no commit, the HEAD of the checkout those cells read on this node;
 //! - `GET /api/inbox`, `/api/card?b=<id>`, `/api/cellmap`: the data cells called by name with a token attenuated
 //!   from this cell's grant to exactly the viewer's abilities in that cell (their row caveats included), so the data
 //!   cell's own gate decides, for this viewer.
@@ -277,17 +281,144 @@ mod mesh_api {
     }
 }
 
+/// ref.resolve's contract (repo:live-refs contracts/ref_resolve.rs, major 1), copied verbatim like door_api.
+#[allow(dead_code)]
+mod ref_resolve_api {
+    ce_wire::api! {
+    api RefResolve = "ref.resolve", version 1;
+    types {
+        /// Health contract: these three fields, in this order, in every cell.
+        pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+        pub struct ResolveReq { pub reference: String }
+        /// One place the thing is now: the node, its key, and what it holds there (a content hash for bytes).
+        pub struct Holder { pub node: String, pub node_key: String, pub sha256: Option<String>, pub size: u64, pub since_ms: u64, pub live: bool }
+        /// `source` is "mesh" when a holder answered now, "local index" when none could be reached; `as_of_ms` is
+        /// then the time of the newest announcement the local index holds.
+        pub struct Located { pub id: String, pub kind: String, pub holders: Vec<Holder>, pub pin: Option<String>, pub source: String, pub as_of_ms: u64, pub detail: String }
+        pub enum Resolution { Located(Located), Ambiguous { written: String, reason: String, candidates: Vec<String> }, Unknown { written: String, reason: String } }
+        pub struct Announce { pub id: String, pub kind: String, pub node: String, pub sha256: Option<String>, pub size: u64, pub at_ms: u64, pub gone: bool, pub detail: String }
+        pub enum RefError { Invalid(String), Unavailable(String) }
+    }
+    ops {
+        1 => HealthOp(()) -> Health, needs "ref.resolve:health";
+        2 => Resolve(ResolveReq) -> Result<Resolution, RefError>, needs "ref.resolve:read";
+        3 => Publish(Announce) -> Result<u64, RefError>, needs "ref.resolve:announce";
+    }
+    }
+}
+
+/// ref.pin's contract (repo:live-refs contracts/ref_pin.rs, major 1), copied verbatim like door_api.
+#[allow(dead_code)]
+mod ref_pin_api {
+    ce_wire::api! {
+    api RefPin = "ref.pin", version 1;
+    types {
+        pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+        pub struct PinReq { pub reference: String }
+        pub struct PinnedRef { pub reference: String, pub sha256: String, pub size: u64, pub node: String }
+        pub struct VerifyReq { pub pinned: String }
+        pub enum Verdict { Ok { sha256: String }, Refused { want: String, got: String } }
+        pub struct FetchReq { pub pinned: String }
+        pub enum Fetched { Ok { sha256: String, bytes: Vec<u8> }, Refused { want: String, got: String } }
+        pub struct PutReq { pub id: String, pub bytes: Vec<u8> }
+        pub enum PinError { Invalid(String), NotHere(String) }
+    }
+    ops {
+        1 => HealthOp(()) -> Health, needs "ref.pin:health";
+        2 => Pin(PinReq) -> Result<PinnedRef, PinError>, needs "ref.pin:read";
+        3 => Verify(VerifyReq) -> Result<Verdict, PinError>, needs "ref.pin:read";
+        4 => Fetch(FetchReq) -> Result<Fetched, PinError>, needs "ref.pin:read";
+        5 => Put(PutReq) -> Result<PinnedRef, PinError>, needs "ref.pin:write";
+    }
+    }
+}
+
+/// The most of a file the viewer shows.
+const VIEW_MAX: usize = 512 * 1024;
+
+/// One file through the cell reference system, as the viewer: ref.resolve says where `repo:<repo>/<path>@<commit>`
+/// lives and its content hash, ref.pin hands over only the bytes with that hash. No commit: the HEAD of `~/dev/<repo>`
+/// here, the checkout both cells read on this node. -> (status, body).
+async fn view_ref(person: &str, abilities: &[String], r: &str) -> (&'static str, serde_json::Value) {
+    use serde_json::json;
+    let Some((repo, path, commit)) = parse_view_ref(r) else {
+        return ("400 Bad Request", json!({"error": "ref: repo:<repo>/<path>[@<commit>]"}));
+    };
+    if for_cell(abilities, "ref.resolve", "ref.resolve:read").is_none() || for_cell(abilities, "ref.pin", "ref.pin:read").is_none() {
+        return ("403 Forbidden", json!({"error": "the file viewer is not open to you"}));
+    }
+    let commit = match commit {
+        Some(c) => c,
+        None => {
+            let o = tokio::process::Command::new("git").arg("-C").arg(format!("{}/dev/{repo}", home())).args(["rev-parse", "HEAD"]).output().await;
+            match o {
+                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+                _ => return ("404 Not Found", json!({"error": format!("{repo} has no checkout on {} (where ref.pin reads)", node_name())})),
+            }
+        }
+    };
+    let written = format!("repo:{repo}/{path}@{commit}");
+    let rc = match client::<ref_resolve_api::RefResolve>(person, abilities).await {
+        Ok(c) => c,
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("ref.resolve: {e}")})),
+    };
+    let loc = match rc.call::<ref_resolve_api::Resolve>(&ref_resolve_api::ResolveReq { reference: written.clone() }).await {
+        Ok(Ok(ref_resolve_api::Resolution::Located(l))) => l,
+        Ok(Ok(ref_resolve_api::Resolution::Unknown { reason, .. })) => return ("404 Not Found", json!({"error": reason, "ref": written})),
+        Ok(Ok(ref_resolve_api::Resolution::Ambiguous { reason, candidates, .. })) => return ("409 Conflict", json!({"error": reason, "ref": written, "candidates": candidates})),
+        Ok(Err(e)) => return ("503 Service Unavailable", json!({"error": format!("ref.resolve: {e:?}")})),
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("ref.resolve: {e}")})),
+    };
+    let Some(pin) = loc.pin.clone() else { return ("404 Not Found", json!({"error": "ref.resolve gave no content hash", "ref": written})) };
+    let pinned = format!("{written} {pin}");
+    let pc = match client::<ref_pin_api::RefPin>(person, abilities).await {
+        Ok(c) => c,
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("ref.pin: {e}")})),
+    };
+    let bytes = match pc.call::<ref_pin_api::Fetch>(&ref_pin_api::FetchReq { pinned: pinned.clone() }).await {
+        Ok(Ok(ref_pin_api::Fetched::Ok { bytes, .. })) => bytes,
+        Ok(Ok(ref_pin_api::Fetched::Refused { want, got })) => return ("409 Conflict", json!({"error": format!("changed since it was resolved: want {want}, got {got}; open it again"), "ref": pinned})),
+        Ok(Err(e)) => return ("404 Not Found", json!({"error": format!("ref.pin: {e:?}"), "ref": pinned})),
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("ref.pin: {e}")})),
+    };
+    let size = bytes.len();
+    let binary = bytes.iter().take(8192).any(|b| *b == 0);
+    let text = if binary { String::new() } else { String::from_utf8_lossy(&bytes[..size.min(VIEW_MAX)]).into_owned() };
+    let holder = loc.holders.first().map(|h| h.node.clone()).unwrap_or_default();
+    ("200 OK", json!({"ref": pinned, "id": loc.id, "repo": repo, "path": path, "commit": commit, "node": holder, "source": loc.source,
+        "sha256": pin, "size": size, "binary": binary, "truncated": !binary && size > VIEW_MAX, "text": text,
+        "via": ["ref.resolve", "ref.pin"]}))
+}
+
+fn node_name() -> String {
+    std::fs::read_to_string("/etc/hostname").unwrap_or_default().trim().to_string()
+}
+
 /// One search over both: search.hybrid as the viewer (their exact private reads ride in the minted grant) and
 /// search.mesh's merged answer from every node, at once. A side that fails is named in `notes`, never the whole answer.
 /// search.mesh is asked only for a viewer holding `search.mesh:find`: its nodes index internal repos and docs.
+/// Each group keeps its own `k` (Private, Network, Public): for a viewer with private reads search.hybrid is asked
+/// twice, once as them and once with `search.hybrid:find` alone (public only), so their private hits never fill Public.
 async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_json::Value {
     use serde_json::json;
     let t0 = Instant::now();
-    let hybrid = async {
-        for_cell(abilities, "search.hybrid", "search.hybrid:find").ok_or("not open to you".to_string())?;
-        let c = client::<hybrid_api::SearchHybrid>(person, abilities).await?;
-        let r = c.call::<hybrid_api::Find>(&hybrid_api::FindReq { q: q.into(), k, sources: vec![], rerank: true }).await.map_err(|e| e.to_string())?;
-        r.map_err(|e| format!("{e:?}"))
+    let find = |ab: Vec<String>, k: u32| {
+        let q = q.to_string();
+        async move {
+            for_cell(&ab, "search.hybrid", "search.hybrid:find").ok_or("not open to you".to_string())?;
+            let c = client::<hybrid_api::SearchHybrid>(person, &ab).await?;
+            let r = c.call::<hybrid_api::Find>(&hybrid_api::FindReq { q, k, sources: vec![], rerank: true }).await.map_err(|e| e.to_string())?;
+            r.map_err(|e| format!("{e:?}"))
+        }
+    };
+    let pub_ab = public_only(abilities);
+    // as the viewer: enough to fill Private after the public hits in it are taken out
+    let hybrid = find(abilities.to_vec(), if pub_ab.is_some() { (k * 2).min(50) } else { k });
+    let public_ask = async {
+        match pub_ab.clone() {
+            Some(ab) => Some(find(ab, k).await),
+            None => None,
+        }
     };
     let mesh = async {
         for_cell(abilities, "search.mesh", "search.mesh:find").ok_or("not open to you".to_string())?;
@@ -295,19 +426,37 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
         let r = c.call::<mesh_api::Mesh>(&mesh_api::MeshReq { q: q.into(), k, deadline_ms: 2500, sources: vec![] }).await.map_err(|e| e.to_string())?;
         r.map_err(|e| format!("{e:?}"))
     };
-    let (h, m) = tokio::join!(tokio::time::timeout(Duration::from_secs(22), hybrid), tokio::time::timeout(Duration::from_secs(12), mesh));
+    let (h, p, m) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(22), hybrid),
+        tokio::time::timeout(Duration::from_secs(22), public_ask),
+        tokio::time::timeout(Duration::from_secs(12), mesh)
+    );
     let (mut private, mut network, mut public, mut notes) = (vec![], vec![], vec![], vec![]);
+    let hrow = |x: &hybrid_api::Hit| {
+        json!({"title": x.title, "snippet": x.snippet, "source": x.source, "machine": x.machine, "path": x.path,
+            "score": x.score, "open": open_of(&x.source, "", &x.path, ""), "from": "search.hybrid"})
+    };
     match h {
         Ok(Ok(r)) => {
             notes.push(json!({"cell": "search.hybrid", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64, "reranked": r.reranked}));
-            for x in r.hits {
-                let row = json!({"title": x.title, "snippet": x.snippet, "source": x.source, "machine": x.machine, "path": x.path,
-                    "score": x.score, "open": open_of(&x.source, "", &x.path, ""), "from": "search.hybrid"});
-                if group_of(&x.acl) == "public" { public.push(row) } else { private.push(row) }
+            for x in &r.hits {
+                if group_of(&x.acl) == "public" { public.push(hrow(x)) } else { private.push(hrow(x)) }
             }
         }
         Ok(Err(e)) => notes.push(json!({"cell": "search.hybrid", "ok": false, "err": e.chars().take(200).collect::<String>()})),
         Err(_) => notes.push(json!({"cell": "search.hybrid", "ok": false, "err": "no answer in 22 s"})),
+    }
+    match p {
+        Ok(None) => {}
+        Ok(Some(Ok(r))) => {
+            notes.push(json!({"cell": "search.hybrid", "ask": "public", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64}));
+            // the public-only answer first: it is ranked among public hits alone
+            let mut both: Vec<serde_json::Value> = r.hits.iter().filter(|x| group_of(&x.acl) == "public").map(hrow).collect();
+            both.append(&mut public);
+            public = both;
+        }
+        Ok(Some(Err(e))) => notes.push(json!({"cell": "search.hybrid", "ask": "public", "ok": false, "err": e.chars().take(200).collect::<String>()})),
+        Err(_) => notes.push(json!({"cell": "search.hybrid", "ask": "public", "ok": false, "err": "no answer in 22 s"})),
     }
     match m {
         Ok(Ok(r)) => {
@@ -318,13 +467,80 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
                 let (machine, path) = first.map(|l| (l.node.clone(), l.path.clone())).unwrap_or_default();
                 network.push(json!({"title": x.title, "snippet": x.snippet, "source": x.sources.join(", "), "kind": x.kind, "machine": machine, "path": path,
                     "also": x.locations.iter().skip(1).map(|l| l.node.clone()).collect::<Vec<_>>(), "score": x.score,
-                    "open": open_of("", &x.kind, &path, &x.key), "from": "search.mesh"}));
+                    "open": open_of("", &x.kind, &path, &x.key), "origin": if x.kind == "repo" { origin_of(&x.key) } else { None }, "from": "search.mesh"}));
             }
         }
         Ok(Err(e)) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": e.chars().take(200).collect::<String>()})),
         Err(_) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": "no answer in 12 s"})),
     }
-    json!({"q": q, "private": private, "network": network, "public": public, "notes": notes, "took_ms": t0.elapsed().as_millis() as u64})
+    let key = |v: &serde_json::Value| format!("{}\n{}\n{}", v["path"], v["title"], v["machine"]);
+    let n = k as usize;
+    let (mut private, mut network, mut public) = (first_unique(private, n, key), first_unique(network, n, key), first_unique(public, n, key));
+    pin_links(&mut [&mut private, &mut network, &mut public]).await;
+    json!({"q": q, "per_group": k, "private": private, "network": network, "public": public,
+        "notes": notes, "took_ms": t0.elapsed().as_millis() as u64})
+}
+
+/// Every viewer link (`/search/?ref=repo:<repo>/<path>`) pinned to what the viewer can open: ref.pin reads a repo
+/// file at a commit from this node's checkout `~/dev/<repo>`, so a link is kept, as `repo:<repo>/<path>@<HEAD>`, only
+/// when that checkout holds the file at HEAD (one `git rev-parse` and one `git cat-file --batch-check` per repo). Any
+/// other row opens at its real origin when search.mesh gave one (`origin`), else has no link: never a dead or guessed
+/// one (a copy only in search.hybrid's mirror of another machine is not a checkout ref.pin can read).
+async fn pin_links(groups: &mut [&mut Vec<serde_json::Value>]) {
+    let mut want: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for g in groups.iter() {
+        for row in g.iter() {
+            if let Some((repo, path, _)) = row["open"].as_str().and_then(|o| o.strip_prefix("/search/?ref=")).and_then(parse_view_ref) {
+                want.entry(repo).or_default().push(path);
+            }
+        }
+    }
+    let dev = format!("{}/dev", home());
+    let held: BTreeMap<String, (String, std::collections::BTreeSet<String>)> = tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let mut out = BTreeMap::new();
+        for (repo, paths) in want {
+            let dir = format!("{dev}/{repo}");
+            if !std::path::Path::new(&dir).join(".git").exists() {
+                continue;
+            }
+            let Ok(o) = std::process::Command::new("git").args(["-C", &dir, "rev-parse", "HEAD"]).output() else { continue };
+            let commit = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !o.status.success() || commit.len() != 40 {
+                continue;
+            }
+            let Ok(mut c) = std::process::Command::new("git")
+                .args(["-C", &dir, "cat-file", "--batch-check=%(objecttype)"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            else {
+                continue;
+            };
+            if let Some(mut i) = c.stdin.take() {
+                for p in &paths {
+                    let _ = writeln!(i, "{commit}:{p}");
+                }
+            }
+            let Ok(o) = c.wait_with_output() else { continue };
+            let ok: std::collections::BTreeSet<String> =
+                paths.iter().zip(String::from_utf8_lossy(&o.stdout).lines()).filter(|(_, l)| *l == "blob").map(|(p, _)| p.clone()).collect();
+            out.insert(repo, (commit, ok));
+        }
+        out
+    })
+    .await
+    .unwrap_or_default();
+    for g in groups.iter_mut() {
+        for row in g.iter_mut() {
+            let Some((repo, path, _)) = row["open"].as_str().and_then(|o| o.strip_prefix("/search/?ref=")).and_then(parse_view_ref) else { continue };
+            match held.get(&repo).filter(|(_, ok)| ok.contains(&path)) {
+                Some((commit, _)) => row["open"] = format!("/search/?ref=repo:{repo}/{path}@{commit}").into(),
+                None => row["open"] = row.get("origin").cloned().unwrap_or(serde_json::Value::Null),
+            }
+        }
+    }
 }
 
 /// One viewer's grant, minted by the node through wire.ws-door: its key and chain, for exactly `abilities`.
@@ -373,7 +589,8 @@ async fn viewer(person: &str, abilities: &[String]) -> Result<Arc<ViewerGrant>, 
         return Err("refused".into());
     }
     let grants = GRANTS.get_or_init(Arc::default).clone();
-    if let Some(g) = grants.read().await.get(person) {
+    let slot = format!("{person}\n{}", want.join(","));
+    if let Some(g) = grants.read().await.get(&slot) {
         if g.abilities == want && g.not_after > now_s() + 120 {
             return Ok(g.clone());
         }
@@ -393,7 +610,11 @@ async fn viewer(person: &str, abilities: &[String]) -> Result<Arc<ViewerGrant>, 
     let chain = ce_gate::ce_cap::decode_chain_bytes(&b64u(chain).ok_or("wire.ws-door: a bad chain")?).map_err(|e| format!("{e:?}"))?;
     let vg = Arc::new(ViewerGrant { abilities: want, key: ce_gate::ce_identity::Identity::from_secret_bytes(&seed), chain, not_after: m.not_after });
     eprintln!("apps-shell: minted a viewer grant for {person}: {} abilities, until {}", vg.abilities.len(), vg.not_after);
-    grants.write().await.insert(person.to_string(), vg.clone());
+    {
+        let mut w = grants.write().await;
+        w.retain(|_, g| g.not_after > now_s());
+        w.insert(slot, vg.clone());
+    }
     Ok(vg)
 }
 
@@ -475,8 +696,13 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
             if q.is_empty() || q.chars().count() > 300 {
                 return ("400 Bad Request", b"{\"error\":\"q: 1 to 300 characters\"}".to_vec());
             }
-            let k = query(path, "k").and_then(|k| k.parse().ok()).unwrap_or(20u32).clamp(1, 50);
+            let k = query(path, "k").and_then(|k| k.parse().ok()).unwrap_or(PER_GROUP).clamp(1, 50);
             ("200 OK", json(&search(person, abilities, q, k).await))
+        }
+        "/api/ref" if has("/search/") => {
+            let r = query_text(path, "r").unwrap_or_default();
+            let (st, body) = view_ref(person, abilities, r.trim()).await;
+            (st, json(&body))
         }
         _ => refused,
     }
@@ -620,10 +846,14 @@ fn main() {
 
 #[cfg(test)]
 mod contracts {
+    const REF_RESOLVE: &str = "0aa2e2474931699b";
+    const REF_PIN: &str = "966357c40f1b9fff";
     /// The copies must hash as the live cells do, or every call is refused as another api.
     #[test]
     fn copied_search_contracts_match_the_live_cells() {
         assert_eq!(<super::hybrid_api::SearchHybrid as ce_wire::Api>::SCHEMA, 0x2e6c7e98274d467f);
         assert_eq!(<super::mesh_api::SearchMesh as ce_wire::Api>::SCHEMA, 0xb78f3a1097281268);
+        assert_eq!(format!("{:016x}", <super::ref_resolve_api::RefResolve as ce_wire::Api>::SCHEMA), REF_RESOLVE);
+        assert_eq!(format!("{:016x}", <super::ref_pin_api::RefPin as ce_wire::Api>::SCHEMA), REF_PIN);
     }
 }
