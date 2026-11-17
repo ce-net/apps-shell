@@ -1,6 +1,6 @@
 // The Search tab: one box over everything. Private: search.hybrid as this viewer (repos, talk log, mail, goals, rooms,
-// inbox, calls, people; only what the viewer's own exact grants read). Global: what cells published for everyone,
-// plus search.mesh's merged answer from every node's own index. Each row says its source and machine and opens where
+// inbox, calls, people; only what the viewer's own exact grants read). Network: search.mesh's merged answer from every
+// node's own index of repos, cells and docs (internal). Public: what cells published for everyone. Each row says its source and machine and opens where
 // it lives. ?q= in the address keeps a search shareable with whoever may read the same.
 export function mount(root, { h }) {
   if (!document.querySelector('link[data-search-css]')) document.head.append(h('link', { rel: 'stylesheet', href: '_k/search.css', 'data-search-css': true }));
@@ -28,8 +28,8 @@ export function mount(root, { h }) {
   const stat = (label, n, sub, dot, acc) => h('div', { class: 'glass stat' + (acc ? ' ticks' : '') }, h('div', { class: 'label' }, h('i', { class: dot || '' }), label), h('div', { class: 'num' + (acc ? ' acc' : '') }, n), h('div', { class: 'sub' }, sub));
 
   function draw() {
-    pills.replaceChildren(pill('all', 'All'), pill('private', 'Private'), pill('global', 'Global'));
-    if (!last) { out.replaceChildren(h('p', { class: 'note' }, 'Private: your repos, docs, talk log, mail, goals, rooms, inbox, calls and people, only what your grants read. Global: what cells publish and every node\'s own index of repos, cells and docs.')); return; }
+    pills.replaceChildren(pill('all', 'All'), pill('private', 'Private'), pill('network', 'Network'), pill('public', 'Public'));
+    if (!last) { out.replaceChildren(h('p', { class: 'note' }, 'Private: your repos, docs, talk log, mail, goals, rooms, inbox, calls and people, only what your grants read. Network: every machine\'s own index of repos, cells and docs. Public: what cells publish for everyone.')); return; }
     if (last.error) { out.replaceChildren(h('p', { class: 'note' }, last.error)); return; }
     const d = last;
     const hy = d.notes.find(n => n.cell === 'search.hybrid') || {}, me = d.notes.find(n => n.cell === 'search.mesh') || {};
@@ -37,10 +37,11 @@ export function mount(root, { h }) {
     out.replaceChildren(
       h('div', { class: 'stats' },
         stat('Private', d.private.length, hy.ok ? 'from search.hybrid in ' + hy.took_ms + ' ms' : 'search.hybrid: ' + (hy.err || 'no answer'), hy.ok ? 'g' : 'r', true),
-        stat('Global', d.global.length, 'published and network', null, false),
-        stat('Nodes', me.ok ? me.answered : 0, me.ok ? 'of ' + me.asked + ' answered' : 'search.mesh: ' + (me.err || 'no answer'), me.ok && me.answered === me.asked ? 'g' : 'r', false)),
-      show !== 'global' ? group('Private', d.private, 'Nothing private matches, or nothing private is open to you.') : null,
-      show !== 'private' ? group('Global', d.global, 'Nothing published or on the network matches.') : null,
+        stat('Network', d.network.length, me.ok ? me.answered + ' of ' + me.asked + ' machines answered' : 'search.mesh: ' + (me.err || 'no answer'), me.ok && me.answered === me.asked ? 'g' : 'r', false),
+        stat('Public', d.public.length, 'published by cells for everyone', null, false)),
+      show === 'all' || show === 'private' ? group('Private', d.private, 'Nothing private matches, or nothing private is open to you.') : null,
+      show === 'all' || show === 'network' ? group('Network', d.network, me.ok ? 'Nothing on the machines\' own indexes matches.' : 'The network search is not open to you or did not answer.') : null,
+      show === 'all' || show === 'public' ? group('Public', d.public, 'Nothing published matches.') : null,
       down.length ? h('p', { class: 'note' }, down.map(n => n.cell + ' did not answer: ' + n.err).join(' · ')) : null,
       h('p', { class: 'note' }, 'Answered in ' + d.took_ms + ' ms.'));
   }

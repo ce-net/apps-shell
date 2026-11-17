@@ -85,12 +85,13 @@ fn the_search_tab_is_live_only_while_search_hybrid_answers() {
 
 #[test]
 fn private_reads_ride_only_for_a_viewer_who_holds_them() {
-    // a viewer with only find: the minted grant carries find, nothing private, so search.hybrid shows only `public`
-    let stranger = s(&["search.hybrid:find", "search.mesh:find"]);
-    assert_eq!(viewer_grant(&stranger), s(&["search.hybrid:find", "search.mesh:find"]));
+    // a viewer with only find: the minted grant carries find, nothing private and no network, so only `public`
+    let stranger = s(&["search.hybrid:find"]);
+    assert_eq!(viewer_grant(&stranger), s(&["search.hybrid:find"]));
+    assert!(for_cell(&stranger, "search.mesh", "search.mesh:find").is_none(), "no search.mesh:find: the network is not asked");
     assert!(!viewer_grant(&stranger).iter().any(|a| SEARCH_PRIVATE.contains(&a.as_str())));
     // the owner: exactly his named reads, never a wildcard
-    let mut owner = stranger.clone();
+    let mut owner = s(&["search.hybrid:find", "search.mesh:find"]);
     owner.extend(SEARCH_PRIVATE.iter().map(|a| a.to_string()));
     owner.push("search.hybrid:read:repo:*".into());
     let g = viewer_grant(&owner);
@@ -100,8 +101,8 @@ fn private_reads_ride_only_for_a_viewer_who_holds_them() {
 
 #[test]
 fn hits_group_and_open_where_they_live() {
-    assert_eq!(group_of("public"), "global");
-    assert_eq!(group_of("caps:mesh"), "global");
+    assert_eq!(group_of("public"), "public");
+    assert_eq!(group_of("caps:mesh"), "public");
     for acl in ["words", "mail", "people", "repo:feed-search", "owner:abc", "grant:x:y", ""] {
         assert_eq!(group_of(acl), "private", "{acl}");
     }

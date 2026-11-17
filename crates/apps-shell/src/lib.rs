@@ -75,11 +75,11 @@ pub const SEARCH_PRIVATE: &[&str] = &[
     "search.hybrid:read:people",
 ];
 
-/// Which group a search.hybrid hit belongs to on the Search tab: `global` for what cells published for everyone (acl
-/// `public`) and capabilities anyone may read, else `private` (only a viewer whose exact grant read it got it at all).
+/// Which group a search.hybrid hit belongs to on the Search tab: `public` for what cells published for everyone (acl
+/// `public`) and capabilities any mesh caller may read, else `private` (only a viewer whose exact grant read it got it).
 pub fn group_of(acl: &str) -> &'static str {
     if acl == "public" || acl == "caps:mesh" {
-        "global"
+        "public"
     } else {
         "private"
     }

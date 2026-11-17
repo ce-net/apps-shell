@@ -7,8 +7,9 @@
 //! - `GET /tabs.json` this viewer's tabs: allowed by their abilities and live (their shell answered HealthOp by name
 //!   within LIVE_MS; asked every PROBE_MS); a tab's `view` only when this site carries it;
 //! - `GET /v/<tab>.js` a tab's view module, only to a viewer whose tabs include that tab (404 to anyone else);
-//! - `GET /api/search?q=<words>`: the Search tab, search.hybrid `Find` (private by the viewer's exact read grants, and
-//!   what cells published) and search.mesh `Mesh` (every node's own index) at once, grouped private / global;
+//! - `GET /api/search?q=<words>`: the Search tab, search.hybrid `Find` and search.mesh `Mesh` at once, in three groups:
+//!   `private` (search.hybrid by the viewer's exact read grants), `network` (search.mesh: every node's own index of
+//!   repos, cells and docs; internal, only with `search.mesh:find`) and `public` (what cells published for everyone);
 //! - `GET /api/inbox`, `/api/card?b=<id>`, `/api/cellmap`: the data cells called by name with a token attenuated
 //!   from this cell's grant to exactly the viewer's abilities in that cell (their row caveats included), so the data
 //!   cell's own gate decides, for this viewer.
@@ -278,6 +279,7 @@ mod mesh_api {
 
 /// One search over both: search.hybrid as the viewer (their exact private reads ride in the minted grant) and
 /// search.mesh's merged answer from every node, at once. A side that fails is named in `notes`, never the whole answer.
+/// search.mesh is asked only for a viewer holding `search.mesh:find`: its nodes index internal repos and docs.
 async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_json::Value {
     use serde_json::json;
     let t0 = Instant::now();
@@ -294,14 +296,14 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
         r.map_err(|e| format!("{e:?}"))
     };
     let (h, m) = tokio::join!(tokio::time::timeout(Duration::from_secs(22), hybrid), tokio::time::timeout(Duration::from_secs(12), mesh));
-    let (mut private, mut global, mut notes) = (vec![], vec![], vec![]);
+    let (mut private, mut network, mut public, mut notes) = (vec![], vec![], vec![], vec![]);
     match h {
         Ok(Ok(r)) => {
             notes.push(json!({"cell": "search.hybrid", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64, "reranked": r.reranked}));
             for x in r.hits {
                 let row = json!({"title": x.title, "snippet": x.snippet, "source": x.source, "machine": x.machine, "path": x.path,
                     "score": x.score, "open": open_of(&x.source, "", &x.path, ""), "from": "search.hybrid"});
-                if group_of(&x.acl) == "global" { global.push(row) } else { private.push(row) }
+                if group_of(&x.acl) == "public" { public.push(row) } else { private.push(row) }
             }
         }
         Ok(Err(e)) => notes.push(json!({"cell": "search.hybrid", "ok": false, "err": e.chars().take(200).collect::<String>()})),
@@ -314,7 +316,7 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
             for x in r.hits {
                 let first = x.locations.first();
                 let (machine, path) = first.map(|l| (l.node.clone(), l.path.clone())).unwrap_or_default();
-                global.push(json!({"title": x.title, "snippet": x.snippet, "source": x.sources.join(", "), "kind": x.kind, "machine": machine, "path": path,
+                network.push(json!({"title": x.title, "snippet": x.snippet, "source": x.sources.join(", "), "kind": x.kind, "machine": machine, "path": path,
                     "also": x.locations.iter().skip(1).map(|l| l.node.clone()).collect::<Vec<_>>(), "score": x.score,
                     "open": open_of("", &x.kind, &path, &x.key), "from": "search.mesh"}));
             }
@@ -322,7 +324,7 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
         Ok(Err(e)) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": e.chars().take(200).collect::<String>()})),
         Err(_) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": "no answer in 12 s"})),
     }
-    json!({"q": q, "private": private, "global": global, "notes": notes, "took_ms": t0.elapsed().as_millis() as u64})
+    json!({"q": q, "private": private, "network": network, "public": public, "notes": notes, "took_ms": t0.elapsed().as_millis() as u64})
 }
 
 /// One viewer's grant, minted by the node through wire.ws-door: its key and chain, for exactly `abilities`.
