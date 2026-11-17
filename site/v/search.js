@@ -33,11 +33,11 @@ export function mount(root, { h }) {
     if (last.error) { out.replaceChildren(h('p', { class: 'note' }, last.error)); return; }
     const d = last;
     const hy = d.notes.find(n => n.cell === 'search.hybrid') || {}, me = d.notes.find(n => n.cell === 'search.mesh') || {};
-    const down = d.notes.filter(n => !n.ok);
+    const down = d.notes.filter(n => !n.ok && n.err !== 'not open to you');
     out.replaceChildren(
       h('div', { class: 'stats' },
         stat('Private', d.private.length, hy.ok ? 'from search.hybrid in ' + hy.took_ms + ' ms' : 'search.hybrid: ' + (hy.err || 'no answer'), hy.ok ? 'g' : 'r', true),
-        stat('Network', d.network.length, me.ok ? me.answered + ' of ' + me.asked + ' machines answered' : 'search.mesh: ' + (me.err || 'no answer'), me.ok && me.answered === me.asked ? 'g' : 'r', false),
+        stat('Network', d.network.length, me.ok ? me.answered + ' of ' + me.asked + ' machines answered' : me.err === 'not open to you' ? 'not open to you' : 'search.mesh: ' + (me.err || 'no answer'), me.ok && me.answered === me.asked ? 'g' : 'r', false),
         stat('Public', d.public.length, 'published by cells for everyone', null, false)),
       show === 'all' || show === 'private' ? group('Private', d.private, 'Nothing private matches, or nothing private is open to you.') : null,
       show === 'all' || show === 'network' ? group('Network', d.network, me.ok ? 'Nothing on the machines\' own indexes matches.' : 'The network search is not open to you or did not answer.') : null,
