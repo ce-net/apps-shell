@@ -1,6 +1,15 @@
 // apps.shell's page: the tab bar is whatever tabs.json says this viewer has now (allowed by their chain, and a
 // replica of the tab's shell answering). Polled every 3 s, so a grant, an end or a last replica going down changes
 // the bar on an open page without a reload. This file names no tab and no system.
+//
+// It is also the ce-net browser (repo:ce/docs/CE-REF-OPENERS-AND-HOME-2026-11-18.md section 4): every link is a
+// ce-ref, opened by host.open through open.with in the Pane (side on a desk, full screen on a phone). The Bar takes a
+// ce-ref (short or ce-ref://), a cell path or words, and shows the short ref of what the pane shows; Copy gives the
+// full ce-ref://. The page address /<tab>/o/<ref> is this host's transport only. Views get the V2 5.1 surface (h,
+// call, watch, slot, emit, open) and never a URL, a fetch or a token. The one path to the outside web is
+// handoff(), reached only from the Outside view after it said "outside ce-net".
+import { CeRef } from './ref.js';
+
 const h = (t, a = {}, ...kids) => {
   const e = document.createElement(t);
   for (const [k, v] of Object.entries(a)) {
@@ -25,16 +34,267 @@ themeBtn.addEventListener('click', () => setTheme(root.getAttribute('data-theme'
 
 const rail = document.getElementById('tabs');
 const main = document.getElementById('main');
+const frame = document.querySelector('.frame');
 let mounted = null; // {view, stop}
 let last = '';
+let here = '/';          // this face's tab route, from tabs.json
+let tabsNow = [];
 
-const icon = () => {
-  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  s.setAttribute('viewBox', '0 0 20 20'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.4');
-  const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-  r.setAttribute('x', '4'); r.setAttribute('y', '4'); r.setAttribute('width', '12'); r.setAttribute('height', '12');
-  s.append(r); return s;
+const device = () => innerWidth < 700 ? 'Phone' : innerWidth > 1800 ? 'Wall' : 'Desk';
+
+// ---- transport: one GET per op of the view's own cell, under the viewer's session. Views never see this. ----
+const TIMEOUT_MS = 25000;
+async function get(op, req = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(req)) if (v != null && v !== '') q.set(k, String(v));
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch('api/' + op + (q.toString() ? '?' + q : ''), { cache: 'no-store', credentials: 'same-origin', signal: ctl.signal });
+    const data = await r.json().catch(() => ({}));
+    return { status: r.status, ok: r.ok, data };
+  } catch (e) {
+    return { status: 0, ok: false, data: { error: ctl.signal.aborted ? 'no answer in 25 s' : 'not reachable' }, timeout: ctl.signal.aborted };
+  } finally { clearTimeout(t); }
+}
+
+// ---- the views the shell can mount: view name -> module and the ops of its own cell it may call ----
+const VIEWS = {
+  'ref.view::Text': ['v/ref-text.js', ['ref']],
+  'ref.view::Raw': ['v/ref-raw.js', ['ref']],
+  'ref.view::Record': ['v/ref-record.js', ['rec']],
+  'site.cellmap::Cell': ['v/cell.js', ['cellmap']],
+  'site.cellmap::Node': ['v/cell.js', ['cellmap']],
+  'site.cellmap::Summary': ['v/cells-summary.js', ['cellmap']],
+  'apps.shell::Port': ['v/port.js', []],
+  'apps.shell::Outside': ['v/outside.js', []],
+  'apps.shell::Mount': ['v/mount.js', ['inbox', 'card']],
+  'home::CallsToday': ['v/calls-today.js', ['calls']],
+  'home::PromisesDue': ['v/promises-due.js', ['promises']],
+  'approve.inbox::Pending': ['v/pending.js', ['inbox']],
+  'home::Links': ['v/links.js', ['links']],
 };
+// a tab view's own ops (the tab's routes on this face)
+const TAB_OPS = { 'v/home.js': ['layout'], 'v/search.js': ['search'], 'v/core.js': ['cellmap', 'inbox'], 'v/approvals.js': ['inbox', 'card'] };
+
+const STATES = { live: '', asof: 'as of', pinned: 'pinned', refused: 'not open to you', unknown: 'unknown', outside: 'outside ce-net' };
+const KIND_MARK = { repo: 'file', doc: 'doc', person: 'person', promise: 'promise', call: 'call', meet: 'recording', cell: 'cell', node: 'node',
+  assembly: '3d', map: 'map', web: 'web', view: 'view', op: 'op', contract: 'contract', part: 'part', media: 'media', blob: 'blob' };
+
+// ---- ui-kit: RefChip, SlotFrame ----
+function refChip(ref, opts = {}) {
+  const r = typeof ref === 'string' ? CeRef.parse(ref) : ref;
+  if (!r) return h('span', { class: 'chip', 'data-state': 'unknown', title: 'not a ce-ref: ' + ref }, String(ref));
+  const state = opts.state || (r.kind === 'web' ? 'outside' : r.pin ? 'pinned' : 'live');
+  const title = opts.title || CeRef.title(r);
+  const el = h('button', { type: 'button', class: 'chip' + (opts.block ? ' block' : ''), 'data-state': state, 'data-ref': CeRef.short(r),
+      title: CeRef.short(r) + (STATES[state] ? ' · ' + STATES[state] : ''),
+      onclick: e => { e.preventDefault(); open(CeRef.short(r)); } },
+    h('i', { class: 'k' }, KIND_MARK[r.kind] || r.kind),
+    h('span', { class: 't' }, title),
+    opts.sub ? h('span', { class: 's' }, opts.sub) : null,
+    STATES[state] && state !== 'live' ? h('span', { class: 'st' }, state === 'asof' && opts.asOf ? 'as of ' + opts.asOf : STATES[state]) : null);
+  return el;
+}
+
+function slotFrame(title) {
+  const count = h('span', { class: 'cnt' });
+  const line = h('div', { class: 'stline', 'aria-live': 'polite' }, 'Loading.');
+  const body = h('div', { class: 'body' });
+  const fold = h('button', { type: 'button', class: 'btn quiet fold', 'aria-expanded': 'true' }, 'Fold');
+  const el = h('section', { class: 'glass slotframe', 'data-state': 'loading' }, h('header', {}, h('h2', {}, h('b', {}, title), count), fold), line, body);
+  fold.addEventListener('click', () => { const f = el.classList.toggle('folded'); fold.setAttribute('aria-expanded', String(!f)); fold.textContent = f ? 'Show' : 'Fold'; });
+  return {
+    el, body,
+    state(s, text) { el.dataset.state = s; line.textContent = text || ''; line.hidden = !text; },
+    count(n) { count.textContent = n == null ? '' : String(n); },
+  };
+}
+
+// the standard states of a view (CELL-CONTRACT): loading, empty, refusal with ask, timeout at 25 s
+function answerState(frameOrRoot, res, what) {
+  if (res.ok) return true;
+  const say = (s, t, extra) => {
+    if (frameOrRoot.state) { frameOrRoot.state(s, t); if (extra) frameOrRoot.body.replaceChildren(extra); else frameOrRoot.body.replaceChildren(); }
+    else frameOrRoot.replaceChildren(h('p', { class: 'note' }, t), extra || '');
+  };
+  if (res.status === 403) {
+    const need = res.data && res.data.need;
+    say('refused', (what || 'This') + ' is not open to you' + (need ? ': it needs ' + need + '.' : '.'),
+      need ? refChip('view:approve.inbox@1::Request?need=' + need, { title: 'Ask for ' + need, state: 'refused' }) : null);
+  } else if (res.timeout) say('timeout', (what || 'It') + ' did not answer in 25 s; trying again.');
+  else say('down', (res.data && res.data.error) || ((what || 'It') + ' is not answering (' + res.status + '); trying again.'));
+  return false;
+}
+
+// ---- host: the V2 5.1 surface, per mounted view ----
+function makeHost(ops, extra = {}) {
+  return {
+    h, kit: { RefChip: refChip, SlotFrame: slotFrame, state: answerState }, device: device(),
+    call(op, req) { return ops.includes(op) ? get(op, req) : Promise.resolve({ status: 403, ok: false, data: { error: op + ' is not this view\'s op' } }); },
+    watch(op, req, onDelta, every = 15000) {
+      let stop = false, t = 0;
+      const run = async () => { if (stop) return; const r = await this.call(op, req); if (!stop) { onDelta(r); t = setTimeout(run, every); } };
+      run();
+      return () => { stop = true; clearTimeout(t); };
+    },
+    slot: slot,
+    emit(event, value) { if (event === 'opened' && value) open(value); },
+    open: (ref, opts) => open(ref, opts),
+    ref: { parse: s => CeRef.parse(s), find: t => CeRef.find(t), show: (r, o) => refChip(r, o), short: r => CeRef.short(typeof r === 'string' ? CeRef.parse(r) : r) },
+    ...extra,
+  };
+}
+
+async function mountView(viewName, el, props, extra = {}) {
+  const v = VIEWS[viewName];
+  if (!v) { el.replaceChildren(h('p', { class: 'note' }, 'This shell does not carry ' + viewName + ' yet.')); return () => {}; }
+  let mod;
+  try { mod = await import('../' + v[0]); } catch (_) { el.replaceChildren(h('p', { class: 'note' }, viewName + ' is not open to you here.')); return () => {}; }
+  const stop = mod.mount(el, makeHost(v[1], { props: props || {}, ...extra }));
+  return typeof stop === 'function' ? stop : () => {};
+}
+
+// host.slot(slot): a SlotFrame with the slot's view mounted in it; the view gets the frame for its states.
+function slot(s) {
+  const f = slotFrame(s.title || s.name);
+  f.el.dataset.slot = s.name;
+  f.el.dataset.area = (s.area || 'Main').toLowerCase();
+  const stop = mountView(s.view, f.body, s.props || {}, { frame: f, offer: s.offer || null });
+  f.el.unmount = () => stop.then(fn => fn());
+  return f.el;
+}
+
+// ---- the Bar ----
+const bar = h('form', { class: 'bar glass', role: 'search', onsubmit: e => { e.preventDefault(); go(barIn.value); } });
+const barIn = h('input', { class: 'q', name: 'r', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Open a ce-ref, a cell or search',
+  placeholder: 'ce-ref, cell, or search' });
+const copyBtn = h('button', { type: 'button', class: 'btn quiet', title: 'Copy the ce-ref:// of what is open', hidden: true }, 'Copy');
+bar.append(h('span', { class: 'mark' }, 'ce'), barIn, copyBtn, h('button', { class: 'btn primary', type: 'submit' }, 'Open'));
+document.querySelector('.top').insertBefore(bar, document.querySelector('.top .btns'));
+copyBtn.addEventListener('click', async () => {
+  const r = CeRef.parse(barIn.value);
+  if (!r) return;
+  try { await navigator.clipboard.writeText(CeRef.uri(r)); copyBtn.textContent = 'Copied'; } catch (_) { copyBtn.textContent = 'Copy failed'; }
+  setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+});
+
+function go(text) {
+  const s = text.trim();
+  if (!s) return;
+  const r = CeRef.fromBar(s);
+  if (r) return open(CeRef.short(r));
+  // words: the Search tab, if the viewer has it (its own page under this site)
+  const search = tabsNow.find(t => t.route === '/search/');
+  if (search) location.assign('/search/?q=' + encodeURIComponent(s));
+  else showPane(null, paneNote('Search is not open to you. Type a ce-ref (person:..., call:..., repo:...) or a cell name.'));
+}
+
+// ---- the Pane and history ----
+const pane = h('aside', { class: 'pane glass', id: 'pane', hidden: true, 'aria-label': 'Opened' });
+const paneHead = h('header', { class: 'phead' });
+const paneBody = h('div', { class: 'pbody', 'aria-live': 'polite' });
+pane.append(paneHead, paneBody);
+frame.append(pane);
+let paneStop = null, openSeq = 0, openNow = null;
+const cache = new Map(); // short ref -> last Target answer (for when open.with does not answer)
+
+const paneNote = (...t) => h('div', { class: 'pnote' }, ...t);
+
+function showPane(ref, ...content) {
+  if (paneStop) { paneStop(); paneStop = null; }
+  pane.hidden = false;
+  pane.className = 'pane glass ' + (device() === 'Phone' ? 'full' : 'side');
+  frame.classList.add('with-pane');
+  const back = h('button', { type: 'button', class: 'btn quiet', onclick: () => history.back() }, 'Back');
+  const close = h('button', { type: 'button', class: 'btn quiet', onclick: () => closePane(true) }, 'Close');
+  paneHead.replaceChildren(back, h('div', { class: 'pref' }, ref ? refChip(ref, { block: true }) : ''), close);
+  paneBody.replaceChildren(...content.filter(Boolean));
+}
+
+function closePane(push) {
+  if (paneStop) { paneStop(); paneStop = null; }
+  pane.hidden = true; frame.classList.remove('with-pane'); openNow = null; barIn.value = ''; copyBtn.hidden = true;
+  if (push) history.pushState({ o: null }, '', here);
+}
+
+function addressOf(short) { return here + 'o/' + encodeURIComponent(short); }
+
+// host.open(ref, {mode, where}): open.with Open for this viewer, then mount the Target's view in the pane.
+async function open(ref, opts = {}) {
+  const r = typeof ref === 'string' ? CeRef.fromBar(ref) : ref;
+  if (!r) return showPane(null, paneNote('Not a ce-ref: ', String(ref)));
+  const short = CeRef.short(r);
+  if (!opts.fromHistory && openNow !== short) history.pushState({ o: short }, '', addressOf(short));
+  openNow = short;
+  barIn.value = short; copyBtn.hidden = false;
+  const my = ++openSeq;
+  showPane(short, paneNote('Opening ', h('b', {}, short), ' through open.with.'));
+  const res = await get('open', { r: short, mode: opts.mode || 'view', device: device() });
+  if (my !== openSeq) return;
+  if (!res.ok) {
+    if (res.status === 403) return showPane(short, paneNote('Opening refs is not open to you here.'));
+    // open.with did not answer: say so, offer the floor from what this page last knew, and keep asking
+    const known = cache.get(short);
+    const raw = h('button', { type: 'button', class: 'btn', onclick: async () => { paneBody.replaceChildren(); paneStop = await mountView('ref.view::Raw', paneBody, { ref: short, cached: true }); } }, 'Show raw from cache');
+    showPane(short, paneNote('open.with is not answering (', (res.data && res.data.error) || res.status, '). Trying again every 3 s.'),
+      known ? paneNote('Last opened in ', h('b', {}, known.view), '.') : null, raw);
+    const retry = setInterval(async () => {
+      if (my !== openSeq) return clearInterval(retry);
+      const again = await get('open', { r: short, mode: opts.mode || 'view', device: device() });
+      if (my !== openSeq) return clearInterval(retry);
+      if (again.ok || again.status === 403) { clearInterval(retry); show(short, again, my); }
+    }, 3000);
+    paneStop = () => clearInterval(retry);
+    return;
+  }
+  show(short, res, my);
+}
+
+async function show(short, res, my) {
+  const o = res.data;
+  if (o.Target) {
+    const t = o.Target;
+    cache.set(short, t);
+    const resolved = CeRef.short(CeRef.fromWire(t.r));
+    barIn.value = resolved;
+    const body = h('div', { class: 'pview' });
+    showPane(resolved, body, t.others ? paneNote(t.others + ' more opener' + (t.others === 1 ? '' : 's') + ' can open ' + t.ty + '.') : null);
+    let props = {};
+    try { props = JSON.parse(t.props || '{}'); } catch (_) {}
+    const stop = await mountView(t.view, body, props, { opened: { ref: resolved, ty: t.ty, cell: t.cell, view: t.view }, handoff });
+    if (my !== openSeq) { stop(); return; }
+    paneStop = stop;
+  } else if (o.Refused) {
+    showPane(short, paneNote('This exists, and it is not open to you: it needs ', h('b', {}, o.Refused.need), '.'),
+      refChip(CeRef.fromWire(o.Refused.ask), { title: 'Ask for ' + o.Refused.need, state: 'refused', block: true }));
+  } else if (o.NoOpener) {
+    showPane(short, paneNote('Nothing opens ', h('b', {}, o.NoOpener.ty), ' yet. A cell that declares an opener for it plugs in by one line.'));
+  } else if (o.Unknown) {
+    showPane(short, h('div', { class: 'chipline' }, refChip(short, { state: 'unknown' })), paneNote(o.Unknown.reason));
+  } else {
+    showPane(short, paneNote('open.with gave an answer this shell does not read.'));
+  }
+}
+
+// the one path to the outside web: only the Outside view, after it named the site and said "outside ce-net"
+function handoff(address) {
+  if (!/^https?:\/\//.test(address)) return;
+  const w = window.open(address, '_blank', 'noopener,noreferrer');
+  if (w) w.opener = null;
+}
+
+function refInAddress() {
+  const p = location.pathname;
+  const i = p.indexOf('/o/');
+  if (i < 0) return null;
+  try { return decodeURIComponent(p.slice(i + 3)); } catch (_) { return null; }
+}
+
+addEventListener('popstate', () => {
+  const r = refInAddress();
+  if (r) open(r, { fromHistory: true }); else closePane(false);
+});
 
 function say(crumb, title, line, link) {
   if (mounted) { mounted.stop(); mounted = null; }
@@ -47,7 +307,7 @@ function say(crumb, title, line, link) {
 // call(op, req) -> Promise of the answer (rejects with an Error that has .status and .refused);
 // watch(op, req, onDelta) long-polls (req may be a function giving the current request): onDelta(answer) for each
 // answer, onDelta(null, error) for a failure, then retries with backoff; returns stop().
-// open(target): https links open in a new tab, a ce-ref opens in the reference viewer (the search tab's).
+// open(target): through host.open of the ce-net browser (open.with, the pane); never a URL.
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function hostFor(view, tab) {
   const host = { h, tab };
@@ -87,38 +347,60 @@ function hostFor(view, tab) {
     })();
     return () => { stopped = true; if (ctl) ctl.abort(); };
   };
-  host.open = target => {
-    const t = String(target || '');
-    if (/^https:\/\//.test(t)) window.open(t, '_blank', 'noopener,noreferrer');
-    else if (t) location.assign('/search/?' + (t.startsWith('repo:') ? 'ref=' : 'q=') + encodeURIComponent(t));
+  // open(target): a ce-ref (or an http address, which becomes a web: ref) opens through open.with in the pane
+  host.open = (target, opts) => {
+    const s = String(target || '');
+    if (s) open(/^https?:\/\//.test(s) ? 'web:' + s : s, opts);
   };
+  host.ref = { parse: x => CeRef.parse(x), find: x => CeRef.find(x), show: (r, o) => refChip(r, o) };
   return host;
 }
 
+const icon = () => {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  s.setAttribute('viewBox', '0 0 20 20'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.4');
+  const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  r.setAttribute('x', '4'); r.setAttribute('y', '4'); r.setAttribute('width', '12'); r.setAttribute('height', '12');
+  s.append(r); return s;
+};
+
+let first = true;
 async function tick() {
   let r;
   try { r = await fetch('tabs.json', { cache: 'no-store', credentials: 'same-origin' }); } catch (_) { return; }
   if (r.status === 401) return say('sign in', 'Sign in.', 'Sign in to see what is open to you.', ['Sign in', '/login?next=' + encodeURIComponent(location.pathname)]);
   if (!r.ok) return;
   const d = await r.json();
+  here = d.here; tabsNow = d.tabs;
   const key = JSON.stringify(d.tabs.map(t => [t.route, t.title, t.badge]));
   if (key !== last) {
     last = key;
     rail.replaceChildren(...d.tabs.map(t => h('a', { href: t.route, 'aria-current': t.route === d.here ? 'page' : false },
       icon(), t.title, t.badge ? h('span', { class: 'bdg' }, t.badge) : null)));
   }
-  const here = d.tabs.find(t => t.route === d.here);
+  if (first) {
+    first = false;
+    // old Search links (?ref= / ?rec=) and /o/<ref> open in the pane
+    const q = new URLSearchParams(location.search);
+    const start = refInAddress() || q.get('ref') || q.get('rec');
+    const sr = start && CeRef.fromBar(start);
+    if (sr) { openNow = CeRef.short(sr); history.replaceState({ o: openNow }, '', addressOf(openNow)); open(sr, { fromHistory: true }); }
+  }
+  const tab = d.tabs.find(t => t.route === d.here);
   if (!d.tabs.length) return say('apps', 'Nothing open.', 'No tab is open to you here. Ask for access, and it appears here when it is granted.');
-  if (!here || !here.view) {
+  if (!tab || !tab.view) {
     if (mounted || !main.dataset.closed) { say('apps', 'Closed here.', 'This tab is not open to you now, or none of its cells answers. Your open tabs are on the left.'); main.dataset.closed = '1'; }
     return;
   }
   delete main.dataset.closed;
-  if (mounted && mounted.view === here.view) return;
+  if (mounted && mounted.view === tab.view) return;
   if (mounted) { mounted.stop(); mounted = null; }
-  const mod = await import('../' + here.view);
+  const mod = await import('../' + tab.view);
   main.replaceChildren();
-  mounted = { view: here.view, stop: mod.mount(main, hostFor(mod.view, here)) };
+  // a tab view of this site gets its own ops; a module a cell ships (view = { cell }) gets that cell's relay
+  const host = TAB_OPS[tab.view] ? makeHost(TAB_OPS[tab.view], { tab }) : hostFor(mod.view, tab);
+  const stop = mod.mount(main, host);
+  mounted = { view: tab.view, stop: typeof stop === 'function' ? stop : () => {} };
 }
 
 tick();

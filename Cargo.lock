@@ -27,6 +27,8 @@ dependencies = [
  "ce-wire",
  "cr-shell-api",
  "foreman-shell-api",
+ "home-shell-api",
+ "open-with-api",
  "serde",
  "serde_json",
  "sha2",
@@ -143,10 +145,15 @@ dependencies = [
 [[package]]
 name = "ce-net-net"
 version = "0.1.0"
-source = "git+https://github.com/ce-net/ce-net-net?rev=90554dd6af0fb0f3ffac56104f9f7b9eb3d7460a#90554dd6af0fb0f3ffac56104f9f7b9eb3d7460a"
+source = "git+https://github.com/ce-net/ce-net-net?rev=19249b1f0e4c862178f0ab679380111f18860f5f#19249b1f0e4c862178f0ab679380111f18860f5f"
 dependencies = [
  "cell-net",
 ]
+
+[[package]]
+name = "ce-ref-text"
+version = "0.1.0"
+source = "git+https://github.com/ce-net/open-with?rev=595aebda99982223d0c51925792a64e478f0a660#595aebda99982223d0c51925792a64e478f0a660"
 
 [[package]]
 name = "ce-wire"
@@ -471,6 +478,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "home-shell-api"
+version = "0.1.0"
+source = "git+https://github.com/ce-net/home-shell?rev=a2ee8813e2eccddbd3428c7c8004ec1ff0182668#a2ee8813e2eccddbd3428c7c8004ec1ff0182668"
+dependencies = [
+ "ce-wire",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -530,6 +545,15 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "memoffset",
+]
+
+[[package]]
+name = "open-with-api"
+version = "0.1.0"
+source = "git+https://github.com/ce-net/open-with?rev=595aebda99982223d0c51925792a64e478f0a660#595aebda99982223d0c51925792a64e478f0a660"
+dependencies = [
+ "ce-ref-text",
+ "ce-wire",
 ]
 
 [[package]]

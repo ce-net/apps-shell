@@ -20,6 +20,8 @@ approve-inbox-api = { workspace = true }
 site-cellmap-api = { workspace = true }
 foreman-shell-api = { workspace = true }
 cr-shell-api = { workspace = true }
+open-with-api = { workspace = true }
+home-shell-api = { workspace = true }
 ui-chain = { workspace = true }
 site-gateway = { workspace = true }
 ce-wire = { workspace = true, features = ["server", "client"] }

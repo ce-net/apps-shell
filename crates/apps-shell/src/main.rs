@@ -1,7 +1,7 @@
 //! `apps-shell serve`: the apps.shell cell behind this machine's door, its liveness loop, and its gateway face.
 //!
 //! The face listens on loopback once per tab route it serves (`$APPS_SHELL_HTTP`, default
-//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
+//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
 //! the prefix cut and the person signed (`X-Ce-Person*`, the gate's per-host key, repo:ui-cells site-gateway's check).
 //! - `GET /` the page (the same bytes for everyone; it names no system), `/_k/*` the kit;
 //! - `GET /tabs.json` this viewer's tabs: allowed by their abilities and live (their shell answered HealthOp by name
@@ -22,6 +22,14 @@
 //!   /api/cell/<cell>/<Op>` the data relay for the ops Page, Topic, Changes, Mark and Close only: each is called with a
 //!   grant wire.ws-door minted for the viewer (their own `feed.view:*` rights and a `feed.view:where:person=<them>`
 //!   caveat), so the feed cell's own gate decides, never this one;
+//! - `GET /o/<ce-ref>`: the same page, with the pane open on that ref (the ce-net browser's transport on this host);
+//! - `GET /api/open?r=<ce-ref>&mode=view&device=Desk`: open.with `Open` as the viewer (repo:open-with): the view that
+//!   opens it for them, a refusal naming the right and an ask ref, no opener, or the resolver's reason;
+//! - `GET /api/layout?device=&from=&to=`: the Home tab, home.shell `Layout` as the viewer, then each slot's `when` op
+//!   asked as the viewer at once (crm.calls today, crm.promises due, approve.inbox Badge): a slot with nothing for the
+//!   viewer is dropped, one whose cell does not answer stays and shows its own state;
+//! - `GET /api/calls?from=&to=`, `/api/promises`, `/api/links`: the Home slots' data, read as the viewer
+//!   (crm.calls List, crm.promises List, the node's home-links rows);
 //! - `GET /api/inbox`, `/api/card?b=<id>`, `/api/cellmap`: the data cells called by name with a token attenuated
 //!   from this cell's grant to exactly the viewer's abilities in that cell (their row caveats included), so the data
 //!   cell's own gate decides, for this viewer.
@@ -75,6 +83,7 @@ async fn shell_ok(shell: &str) -> bool {
         "foreman.shell" => health!(foreman_shell_api::ForemanShell, foreman_shell_api::HealthOp, "foreman.shell:health"),
         "cr.shell" => health!(cr_shell_api::CrShell, cr_shell_api::HealthOp, "cr.shell:health"),
         "search.hybrid" => health!(hybrid_api::SearchHybrid, hybrid_api::HealthOp, "search.hybrid:health"),
+        "home.shell" => health!(home_shell_api::HomeShell, home_shell_api::HealthOp, "home.shell:health"),
         "feed.view" => health!(feed_view_api::FeedView, feed_view_api::HealthOp, "feed.view:health"),
         // a shell whose contract this build does not carry yet: never live here (its system shows in site.cellmap)
         _ => None,
@@ -115,7 +124,7 @@ async fn reply(s: &mut TcpStream, status: &str, ty: &str, body: &[u8], head: boo
 }
 
 async fn reply_cached(s: &mut TcpStream, status: &str, ty: &str, body: &[u8], head: bool, cache: &str) {
-    let csp = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self' https://ce-net.com https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    let csp = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self' https://ce-net.com https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-src 'self' https://maps.ce-net.com; base-uri 'self'; form-action 'none'; frame-ancestors 'none'";
     let h = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ty}\r\nContent-Length: {}\r\nCache-Control: {cache}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: {csp}\r\nVary: X-Ce-Person\r\nConnection: close\r\n\r\n",
         body.len()
@@ -578,6 +587,60 @@ mod crm_promises_api {
         5 => SetStatus(SetStatusReq) -> Result<Promise, PromiseError>, needs "crm.promises:write";
     }
 }
+}
+
+/// state.store's contract (repo:state-store-cell crates/state-store-api at 0ca497e, v2), copied verbatim like the others:
+/// the Home links slot reads its rows (`home/links`) with this cell's own read grant for that one collection.
+#[allow(dead_code)]
+mod state_store_api {
+    ce_wire::api! {
+        api StateStore = "state.store", version 2, accepts [0x17de2d4fee4776ea];
+        types {
+            // Coll: one collection of one app. Every request also carries `cap`: the hex ce-cap chain that grants
+            // `state.<app>.<coll>.read|write|own` (what `ce-iam wallet show state.store:<app>` prints). The Hello proves
+            // which node calls; `cap` proves what that node may touch. An empty cap is refused.
+            pub struct Coll { pub app: String, pub coll: String }
+            // Doc: the stored record. value is JSON text; seq is the global write sequence (List/Watch cursor);
+            // version counts writes of this key from 1; deleted marks a tombstone (Watch/include_deleted only).
+            pub struct Doc { pub key: String, pub value: String, pub seq: u64, pub version: u64, pub deleted: bool }
+            pub struct GetReq { pub at: Coll, pub key: String, pub cap: String }
+            // PutReq: if_version = Some(v) is compare-and-set (refused unless the stored version is v; Some(0) means
+            // "must not exist"); None replaces unconditionally. insert_only = create if absent, else return the stored doc.
+            pub struct PutReq { pub at: Coll, pub key: String, pub value: String, pub if_version: Option<u64>, pub insert_only: bool, pub cap: String }
+            // PatchReq: merge the top-level fields of `fields` (a JSON object) into the stored object.
+            pub struct PatchReq { pub at: Coll, pub key: String, pub fields: String, pub cap: String }
+            pub struct DeleteReq { pub at: Coll, pub key: String, pub cap: String }
+            // ListReq: docs with seq > since whose key starts with prefix, in seq order, at most limit (<= MAX_PAGE).
+            pub struct ListReq { pub at: Coll, pub prefix: String, pub since: u64, pub limit: u32, pub include_deleted: bool, pub cap: String }
+            // Page: next = Some(cursor) when more remain; pass it as since.
+            pub struct Page { pub docs: Vec<Doc>, pub next: Option<u64> }
+            // WatchReq: every change (tombstones included) with seq > since, then each new one.
+            pub struct WatchReq { pub at: Coll, pub since: u64, pub cap: String }
+            pub struct SchemaReq { pub app: String, pub cap: String }
+            // SchemaPutReq: schema is the JSON of {app, collections:{...}}; needs `state.<app>.admin`.
+            pub struct SchemaPutReq { pub app: String, pub schema: String, pub cap: String }
+            // PeerPull: one replication peer. last_ok_pull_at = unix ms of the last pull that applied cleanly, 0 = none
+            // since this server started (held in memory); age_ms = now - last_ok_pull_at on this server's clock, u64::MAX
+            // when none. A reader that needs a fresh replica (cap.admit: under 10 s) checks age_ms.
+            pub struct PeerPull { pub peer: String, pub seq: u64, pub last_ok_pull_at: u64, pub age_ms: u64 }
+            pub struct ReplStatus { pub node: String, pub peers: Vec<PeerPull> }
+            pub struct StoreHealth { pub backend: String, pub records: u64, pub head_seq: u64, pub audit_rows: u64, pub schema_hash: u64 }
+        }
+        ops {
+            1 => Get(GetReq) -> Option<Doc>, needs "state.store:read";
+            2 => Put(PutReq) -> Doc, needs "state.store:write";
+            3 => Delete(DeleteReq) -> (), needs "state.store:write";
+            4 => List(ListReq) -> Page, needs "state.store:read";
+            5 => Health(()) -> StoreHealth, needs "state.store:read";
+            7 => Patch(PatchReq) -> Doc, needs "state.store:write";
+            8 => Schema(SchemaReq) -> Option<String>, needs "state.store:read";
+            9 => SchemaPut(SchemaPutReq) -> (), needs "state.store:write";
+            10 => ReplHealth(()) -> ReplStatus, needs "state.store:read";
+        }
+        streams {
+            6 => Watch(WatchReq) -> stream Doc, needs "state.store:read";
+        }
+    }
 }
 
 /// crm.calls's contract (repo:crm-calls crates/crm-calls-api, major 2), copied verbatim like door_api.
@@ -1054,6 +1117,219 @@ async fn pin_links(groups: &mut [&mut Vec<serde_json::Value>]) {
     }
 }
 
+/// open.with `Open` as the viewer: the ce-ref checked here (either written form), the answer passed on as open.with
+/// gave it (it never names an opener the viewer may not use). -> (status, body).
+async fn open_ref(person: &str, abilities: &[String], r: &str, mode: &str, device: &str) -> (&'static str, serde_json::Value) {
+    use open_with_api as ow;
+    use serde_json::json;
+    let parsed = match ow::CeRef::parse(r) {
+        Ok(p) => p,
+        Err(e) => return ("200 OK", json!({"Unknown": {"reason": e.to_string()}})),
+    };
+    let mode = if mode.eq_ignore_ascii_case("edit") { ow::Mode::Edit } else { ow::Mode::View };
+    let device = match device {
+        "Phone" => ow::Device::Phone,
+        "Wall" => ow::Device::Wall,
+        _ => ow::Device::Desk,
+    };
+    let c = match client::<ow::OpenWith>(person, abilities).await {
+        Ok(c) => c,
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("open.with: {e}")})),
+    };
+    match c.call::<ow::Open>(&ow::OpenReq { r: parsed, mode, device }).await {
+        Ok(o) => ("200 OK", serde_json::to_value(&o).unwrap_or_default()),
+        Err(e) => ("503 Service Unavailable", json!({"error": format!("open.with: {e}")})),
+    }
+}
+
+fn status_name<T: std::fmt::Debug>(s: &T) -> String {
+    let d = format!("{s:?}");
+    d.split(['(', ' ', '{']).next().unwrap_or("").to_string()
+}
+
+/// One day's calls as the viewer (crm.calls List since `from`, cut at `to`). -> (status, {"calls": [..]}).
+async fn home_calls(person: &str, abilities: &[String], path: &str) -> (&'static str, serde_json::Value) {
+    use crm_calls_api as cc;
+    use serde_json::json;
+    if for_cell(abilities, "crm.calls", "crm.calls:read").is_none() {
+        return ("403 Forbidden", json!({"error": "crm.calls is not open to you", "need": "crm.calls:read"}));
+    }
+    let (from, to) = day_range(query(path, "from").and_then(|v| v.parse().ok()), query(path, "to").and_then(|v| v.parse().ok()), now_s() as i64);
+    let c = match client::<cc::CrmCalls>(person, abilities).await {
+        Ok(c) => c,
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("crm.calls: {e}")})),
+    };
+    match c.call::<cc::List>(&cc::ListReq { person: None, status: None, since_s: Some(from) }).await {
+        Ok(Ok(rows)) => {
+            let calls: Vec<serde_json::Value> = rows
+                .into_iter()
+                .filter(|x| x.at_s >= from && x.at_s < to)
+                .map(|x| {
+                    let channel = match &x.channel {
+                        cc::Channel::Other(o) => o.clone(),
+                        ch => status_name(ch),
+                    };
+                    json!({"id": x.id, "person": x.person, "company": x.company, "channel": channel, "at_s": x.at_s, "status": status_name(&x.status)})
+                })
+                .collect();
+            ("200 OK", json!({"calls": calls, "from": from, "to": to}))
+        }
+        Ok(Err(e)) => ("503 Service Unavailable", json!({"error": format!("crm.calls: {e:?}")})),
+        Err(e) => ("503 Service Unavailable", json!({"error": format!("crm.calls: {e}")})),
+    }
+}
+
+/// How far ahead the Home promises slot looks.
+const PROMISES_AHEAD_MS: u64 = 7 * 86_400_000;
+
+/// Open promises due within a week or overdue, as the viewer (crm.promises List). -> (status, {"promises": [..]}).
+async fn home_promises(person: &str, abilities: &[String]) -> (&'static str, serde_json::Value) {
+    use crm_promises_api as cp;
+    use serde_json::json;
+    if for_cell(abilities, "crm.promises", "crm.promises:read").is_none() {
+        return ("403 Forbidden", json!({"error": "crm.promises is not open to you", "need": "crm.promises:read"}));
+    }
+    let c = match client::<cp::CrmPromises>(person, abilities).await {
+        Ok(c) => c,
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("crm.promises: {e}")})),
+    };
+    let req = cp::ListReq { person: String::new(), company: String::new(), status: Some(cp::Status::Open), tenant: String::new() };
+    match c.call::<cp::List>(&req).await {
+        Ok(Ok(rows)) => {
+            let dues: Vec<(u64, bool)> = rows.iter().map(|p| (p.due, p.status == cp::Status::Open)).collect();
+            let out: Vec<serde_json::Value> = due_soon(&dues, ui_chain::now_ms(), PROMISES_AHEAD_MS)
+                .into_iter()
+                .map(|(i, overdue)| {
+                    let p = &rows[i];
+                    json!({"id": p.id, "text": p.text, "to": p.to, "to_name": p.to_name, "company": p.company, "due": p.due, "overdue": overdue})
+                })
+                .collect();
+            ("200 OK", json!({"promises": out}))
+        }
+        Ok(Err(e)) => ("503 Service Unavailable", json!({"error": format!("crm.promises: {e:?}")})),
+        Err(e) => ("503 Service Unavailable", json!({"error": format!("crm.promises: {e}")})),
+    }
+}
+
+/// How long the shell waits for one slot's `when` op before it keeps the slot and lets it show its own state.
+const WHEN_MS: u64 = 3_000;
+
+/// The Home tab: home.shell `Layout` as the viewer, then each slot's `when` asked as the viewer at once. A slot whose
+/// `when` answered "nothing" is dropped; one whose cell did not answer in [`WHEN_MS`] stays (a child fails alone).
+/// Order: area, then urgency (overdue, due today, waiting on the viewer, news, quiet), then order.
+async fn home_layout(person: &str, abilities: &[String], path: &str) -> (&'static str, serde_json::Value) {
+    use home_shell_api as hs;
+    use serde_json::json;
+    let t0 = Instant::now();
+    let device = match query(path, "device").as_deref() {
+        Some("Phone") => hs::Device::Phone,
+        Some("Wall") => hs::Device::Wall,
+        _ => hs::Device::Desk,
+    };
+    let c = match client::<hs::HomeShell>(person, abilities).await {
+        Ok(c) => c,
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("home.shell: {e}")})),
+    };
+    let slots = match c.call::<hs::Layout>(&hs::LayoutReq { device }).await {
+        Ok(s) => s,
+        Err(e) => return ("503 Service Unavailable", json!({"error": format!("home.shell: {e}")})),
+    };
+    let names: Vec<String> = slots.iter().map(|s| s.name.clone()).collect();
+    let has = |n: &str| names.iter().any(|x| x == n);
+    let w = Duration::from_millis(WHEN_MS);
+    // each when: Some(count, urgency) answered, None no answer in time
+    let calls = async {
+        if !has("calls") {
+            return None;
+        }
+        let (st, v) = tokio::time::timeout(w, home_calls(person, abilities, path)).await.ok()?;
+        (st == "200 OK").then(|| (v["calls"].as_array().map(|a| a.len()).unwrap_or(0) as u32, 1u8))
+    };
+    let promises = async {
+        if !has("promises") {
+            return None;
+        }
+        let (st, v) = tokio::time::timeout(w, home_promises(person, abilities)).await.ok()?;
+        let a = v["promises"].as_array().cloned().unwrap_or_default();
+        let overdue = a.iter().any(|p| p["overdue"] == true);
+        (st == "200 OK").then(|| (a.len() as u32, if overdue { 0u8 } else { 1u8 }))
+    };
+    let approve = async {
+        if !has("approve") {
+            return None;
+        }
+        tokio::time::timeout(w, badge(person, abilities)).await.ok().flatten().map(|n| (n, 2u8))
+    };
+    let (calls, promises, approve) = tokio::join!(calls, promises, approve);
+    let title = |n: &str| match n {
+        "calls" => "Calls today",
+        "promises" => "Promises due",
+        "approve" => "Waiting for you",
+        "cells" => "Cells and nodes",
+        "links" => "Links",
+        _ => "",
+    };
+    let area_rank = |a: &hs::Area| match a {
+        hs::Area::Head => 0,
+        hs::Area::Main => 1,
+        hs::Area::Side => 2,
+    };
+    let mut out: Vec<(u8, u8, u16, serde_json::Value)> = Vec::new();
+    let mut dropped = Vec::new();
+    for s in slots {
+        let offer = match s.name.as_str() {
+            "calls" => calls,
+            "promises" => promises,
+            "approve" => approve,
+            _ => None,
+        };
+        if matches!(offer, Some((0, _))) {
+            dropped.push(s.name.clone());
+            continue;
+        }
+        let urgency = offer.map(|(_, u)| u).unwrap_or(4);
+        let area = match s.area {
+            hs::Area::Head => "Head",
+            hs::Area::Main => "Main",
+            hs::Area::Side => "Side",
+        };
+        out.push((area_rank(&s.area), urgency, s.order, json!({"name": s.name, "title": title(&s.name), "cell": s.cell, "major": s.major, "view": s.view, "area": area,
+            "order": s.order, "offer": offer.map(|(count, urgency)| json!({"count": count, "urgency": urgency}))})));
+    }
+    out.sort_by_key(|(a, u, o, _)| (*a, *u, *o));
+    ("200 OK", json!({"slots": out.into_iter().map(|x| x.3).collect::<Vec<_>>(), "nothing_for_you": dropped, "took_ms": t0.elapsed().as_millis() as u64}))
+}
+
+/// The Home links rows: state.store `home/links` (one row a ref: `{"ref", "title", "note"}`), read with this cell's own
+/// grant for that collection (`$APPS_SHELL_LINKS_CAP`, default `<cell keys>/apps.shell/state-home-links.hex`, a
+/// `state.home.links.read` chain). Rows whose `ref` is not a ce-ref are dropped. -> (status, {"links": [..]}).
+async fn home_links() -> (&'static str, serde_json::Value) {
+    use serde_json::json;
+    use state_store_api as ss;
+    let cap_file = env_or("APPS_SHELL_LINKS_CAP", format!("{}/.local/share/ce/cell-keys/apps.shell/state-home-links.hex", home()));
+    let Ok(cap) = std::fs::read_to_string(&cap_file) else {
+        return ("503 Service Unavailable", json!({"error": "the links store is not granted on this node"}));
+    };
+    let Ok(tok) = ui_chain::source_token::<ss::StateStore>(&["state.store:read"], 30, None) else {
+        return ("503 Service Unavailable", json!({"error": "state.store: no grant to read"}));
+    };
+    let mut c = match tokio::time::timeout(Duration::from_secs(4), ce_wire::Client::<ss::StateStore>::by_name(tok)).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => return ("503 Service Unavailable", json!({"error": format!("state.store: {e}")})),
+        Err(_) => return ("503 Service Unavailable", json!({"error": "state.store: no replica answered in 4 s"})),
+    };
+    c.deadline = Duration::from_secs(10);
+    let req = ss::ListReq { at: ss::Coll { app: "home".into(), coll: "links".into() }, prefix: String::new(), since: 0, limit: 64, include_deleted: false, cap: cap.trim().to_string() };
+    match c.call::<ss::List>(&req).await {
+        Ok(page) => {
+            let mut docs = page.docs;
+            docs.sort_by(|a, b| a.key.cmp(&b.key));
+            ("200 OK", json!({ "links": links_rows(docs.iter().map(|d| d.value.as_str())) }))
+        }
+        Err(e) => ("503 Service Unavailable", json!({"error": format!("state.store: {e}")})),
+    }
+}
+
 /// One viewer's grant, minted by the node through wire.ws-door: its key and chain, for exactly `abilities`.
 struct ViewerGrant {
     abilities: Vec<String>,
@@ -1252,7 +1528,7 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
     let mine = tabs_for(abilities, &live, ui_chain::now_ms());
     let has = |r: &str| mine.iter().any(|t| t.route == r);
     match route {
-        "/api/inbox" | "/api/card" if has("/approvals/") => {
+        "/api/inbox" | "/api/card" if has("/approvals/") || has("/home/") => {
             if for_cell(abilities, "approve.inbox", "approve.inbox:read").is_none() {
                 return refused;
             }
@@ -1275,7 +1551,7 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
                 }
             }
         }
-        "/api/cellmap" if has("/core/") => {
+        "/api/cellmap" if has("/core/") || has("/home/") || (!mine.is_empty() && covers(abilities, "open.with:use")) => {
             if for_cell(abilities, "site.cellmap", "site.cellmap:read").is_none() {
                 return refused;
             }
@@ -1296,15 +1572,38 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
             let k = query(path, "k").and_then(|k| k.parse().ok()).unwrap_or(PER_GROUP).clamp(1, 50);
             ("200 OK", json(&search(person, abilities, q, k).await))
         }
-        "/api/rec" if has("/search/") => {
+        "/api/rec" if has("/search/") || (!mine.is_empty() && covers(abilities, "open.with:use")) => {
             let r = query_text(path, "r").unwrap_or_default();
             let q = query_text(path, "q").unwrap_or_default();
             let (st, body) = view_rec(person, abilities, r.trim(), q.trim()).await;
             (st, json(&body))
         }
-        "/api/ref" if has("/search/") => {
+        "/api/ref" if has("/search/") || (!mine.is_empty() && covers(abilities, "open.with:use")) => {
             let r = query_text(path, "r").unwrap_or_default();
             let (st, body) = view_ref(person, abilities, r.trim()).await;
+            (st, json(&body))
+        }
+        "/api/open" if !mine.is_empty() && covers(abilities, "open.with:use") => {
+            let r = query_text(path, "r").unwrap_or_default();
+            let mode = query(path, "mode").unwrap_or_default();
+            let device = query(path, "device").unwrap_or_default();
+            let (st, body) = open_ref(person, abilities, r.trim(), &mode, &device).await;
+            (st, json(&body))
+        }
+        "/api/layout" if has("/home/") => {
+            let (st, body) = home_layout(person, abilities, path).await;
+            (st, json(&body))
+        }
+        "/api/calls" if has("/home/") => {
+            let (st, body) = home_calls(person, abilities, path).await;
+            (st, json(&body))
+        }
+        "/api/promises" if has("/home/") => {
+            let (st, body) = home_promises(person, abilities).await;
+            (st, json(&body))
+        }
+        "/api/links" if has("/home/") && covers(abilities, "home.shell:links") => {
+            let (st, body) = home_links().await;
             (st, json(&body))
         }
         _ => refused,
@@ -1337,8 +1636,10 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
     if method != "GET" && !is_head && !relay {
         return reply(&mut s, "405 Method Not Allowed", "text/plain", b"", false).await;
     }
-    if route == "/" || route == "/index.html" {
-        return reply(&mut s, "200 OK", "text/html; charset=utf-8", file("index.html").unwrap_or_default(), is_head).await;
+    if route == "/" || route == "/index.html" || route.starts_with("/o/") {
+        // the page names its own tab route as its base, so /o/<ref> loads the same kit and views
+        let page = String::from_utf8_lossy(file("index.html").unwrap_or_default()).replacen("<head>", &format!("<head>\n<base href=\"{}\">", f.route), 1);
+        return reply(&mut s, "200 OK", "text/html; charset=utf-8", page.as_bytes(), is_head).await;
     }
     if let Some(k) = route.strip_prefix("/_k/") {
         return match file(&format!("_k/{k}")) {
@@ -1406,7 +1707,8 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
             };
         }
         // the same 404 for a view that does not exist and one this viewer may not have
-        return match mine.iter().any(|t| view_of(&t.route) == Some(name.as_str())).then(|| file(&name)).flatten() {
+        let open_to = mine.iter().any(|t| view_of(&t.route) == Some(name.as_str())) || (!mine.is_empty() && view_needs(&name).is_some_and(|n| covers(&ab, n)));
+        return match open_to.then(|| file(&name)).flatten() {
             Some(b) => reply(&mut s, "200 OK", "text/javascript; charset=utf-8", b, is_head).await,
             None => reply(&mut s, "404 Not Found", "text/plain", b"no such file", is_head).await,
         };
@@ -1442,7 +1744,7 @@ async fn serve() -> Result<(), String> {
     tokio::spawn(liveness(live.clone()));
     let person_key: PathBuf = env_or("CE_GATE_PERSON_KEY", format!("{}/.config/work-show/person-key", home())).into();
     let people: PathBuf = env_or("APPS_SHELL_PEOPLE", format!("{}/.config/apps-shell/people.json", home())).into();
-    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/".into()).split(',') {
+    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/".into()).split(',') {
         let (addr, route) = pair.split_once('=').ok_or_else(|| format!("APPS_SHELL_HTTP: {pair}: want <addr>=<route>"))?;
         let f = Arc::new(Face { route: route.into(), live: live.clone(), person_key: person_key.clone(), people: people.clone() });
         let addr = addr.to_string();
@@ -1498,6 +1800,8 @@ fn main() {
 mod contracts {
     const REF_RESOLVE: &str = "0aa2e2474931699b";
     const REF_PIN: &str = "966357c40f1b9fff";
+    /// apps.shell@1 as foreman-ops-1's door served it before the Home tab (2026-11-18).
+    const APPS_SHELL: &str = "0eff16cb36c9fc92";
     /// The copies must hash as the live cells do, or every call is refused as another api.
     #[test]
     fn copied_search_contracts_match_the_live_cells() {
@@ -1527,5 +1831,14 @@ mod contracts {
         assert_eq!(<super::crm_people_api::CrmPeople as ce_wire::Api>::SCHEMA, 0x448ba80c84fc9d29);
         assert_eq!(<super::crm_promises_api::CrmPromises as ce_wire::Api>::SCHEMA, 0xb536f482fae0a492);
         assert_eq!(<super::crm_calls_api::CrmCalls as ce_wire::Api>::SCHEMA, 0x75a354c0af4a012f);
+    }
+    /// This cell's own api is unchanged by the Home tab and the ce-net browser (additive routes only).
+    #[test]
+    fn copied_state_store_contract_matches_the_live_cell() {
+        assert_eq!(<super::state_store_api::StateStore as ce_wire::Api>::SCHEMA, 0x054ed03aa6aa8fc1);
+    }
+    #[test]
+    fn apps_shell_schema_is_unchanged() {
+        assert_eq!(format!("{:016x}", <apps_shell_api::AppsShell as ce_wire::Api>::SCHEMA), APPS_SHELL);
     }
 }

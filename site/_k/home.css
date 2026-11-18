@@ -1,0 +1,16 @@
+/* Home: slots of other cells' views, laid out by home.shell (area head, main, side). */
+.home{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:10px;align-items:start}
+.home .col{display:flex;flex-direction:column;min-width:0}
+.home.one{grid-template-columns:minmax(0,1fr)}
+.home .lede{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.home .lede .sub{margin:0}
+.frame.with-pane .home{grid-template-columns:minmax(0,1fr)}
+@media (max-width:700px){.home{grid-template-columns:minmax(0,1fr)}}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font:400 12px var(--sans)}
+.kv dt{font:400 10.5px var(--mono);color:var(--ink-2)}
+.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+pre.code{margin:10px 0;padding:12px;overflow:auto;max-height:70vh;font:400 11.5px/1.55 var(--mono);color:var(--ink);white-space:pre;tab-size:4}
+pre.prose{white-space:pre-wrap;word-break:break-word;font-family:var(--sans);font-size:13px;line-height:1.55}
+.portframe{width:100%;height:calc(100dvh - 180px);border:1px solid var(--line);border-radius:var(--r);background:var(--ground)}
+.outside{display:flex;flex-direction:column;gap:12px;align-items:flex-start}
+.outside .site{font:400 var(--t-xl) var(--disp);letter-spacing:var(--track-disp)}

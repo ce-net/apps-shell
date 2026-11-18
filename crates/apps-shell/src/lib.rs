@@ -42,19 +42,25 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint-for:crm.people",
     "wire.ws-door:mint-for:crm.promises",
     "wire.ws-door:mint-for:crm.calls",
+    "wire.ws-door:mint-for:open.with",
+    "wire.ws-door:mint-for:home.shell",
     "wire.ws-door:mint-for:feed.view",
     "approve.inbox:health",
     "site.cellmap:health",
     "foreman.shell:health",
     "cr.shell:health",
     "search.hybrid:health",
+    "home.shell:health",
+    "state.store:read",
     "feed.view:health",
     "delegate:1",
 ];
 
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
-pub const DATA_CELLS: &[&str] =
-    &["approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls", "feed.view"];
+pub const DATA_CELLS: &[&str] = &[
+    "approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls",
+    "open.with", "home.shell", "feed.view",
+];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
 pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
@@ -70,7 +76,7 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
 
 /// Leif's abilities when the people file does not name him.
 pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs", "search.hybrid:find", "search.mesh:find", "ref.resolve:read", "ref.pin:read",
-    "cell.search:search", "crm.people:read", "crm.promises:read", "crm.calls:read"];
+    "cell.search:search", "crm.people:read", "crm.promises:read", "crm.calls:read", "open.with:use", "home.shell:open", "home.shell:links"];
 
 /// The Search tab's private reads: search.hybrid opens a private label only for an ability naming it exactly (its
 /// lib.rs PRIVATE), and every repo by the exact `read:repos`. A viewer's search carries only the ones they hold.
@@ -280,6 +286,7 @@ pub fn all_tabs() -> Vec<(&'static str, Tab)> {
 /// The view module this gateway serves for a tab route (only the tabs whose views live in this site).
 pub fn view_of(route: &str) -> Option<&'static str> {
     match route {
+        "/home/" => Some("v/home.js"),
         "/approvals/" => Some("v/approvals.js"),
         "/core/" => Some("v/core.js"),
         "/search/" => Some("v/search.js"),
@@ -304,4 +311,65 @@ pub fn origin_of(key: &str) -> Option<String> {
     };
     let host_ok = !host.is_empty() && host.contains('.') && host.chars().all(|c| c.is_ascii_alphanumeric() || "-.".contains(c));
     (host_ok && !path.is_empty() && path.split('/').all(name_ok)).then(|| format!("https://{host}/{path}"))
+}
+
+/// The view modules that are not a tab's own: the openers open.with may name (ref.view, site.cellmap, apps.shell
+/// views) and the Home slots. Each is served only to a viewer whose chain holds its right (the same 404 otherwise), and
+/// every data route it calls checks the viewer's right in that cell again.
+pub fn view_needs(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "v/ref-text.js" | "v/ref-raw.js" | "v/ref-record.js" | "v/cell.js" | "v/port.js" | "v/outside.js" | "v/mount.js" => "open.with:use",
+        "v/calls-today.js" => "crm.calls:read",
+        "v/promises-due.js" => "crm.promises:read",
+        "v/pending.js" => "approve.inbox:read",
+        "v/cells-summary.js" => "site.cellmap:read",
+        "v/links.js" => "home.shell:links",
+        _ => return None,
+    })
+}
+
+/// A Home links row (state.store `home/links`, one row a ref): `{"ref": "assembly:huebot", "title": "Huebot assembly",
+/// "note": "3D, step by step"}`. Rows whose `ref` is not a ce-ref are dropped, never shown as text that could be a URL.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq)]
+pub struct Link {
+    #[serde(rename = "ref")]
+    pub r: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct Links {
+    #[serde(default)]
+    links: Vec<Link>,
+}
+
+pub fn links(file: Option<&str>) -> Vec<Link> {
+    let Some(t) = file else { return vec![] };
+    let Ok(l) = serde_json::from_str::<Links>(t) else { return vec![] };
+    l.links.into_iter().filter(|x| open_with_api::CeRef::parse(&x.r).is_ok()).take(64).collect()
+}
+
+/// The Home links from state.store rows (`home/links`, each value one [`Link`] as JSON); a row that does not parse or
+/// whose `ref` is not a ce-ref is dropped.
+pub fn links_rows<'a>(values: impl Iterator<Item = &'a str>) -> Vec<Link> {
+    values.filter_map(|v| serde_json::from_str::<Link>(v).ok()).filter(|x| open_with_api::CeRef::parse(&x.r).is_ok()).take(64).collect()
+}
+
+/// The calls of one day for the Home slot: `[from, to)` in unix seconds, at most two days wide (the viewer's own day,
+/// computed by its browser in its own zone), oldest first.
+pub fn day_range(from: Option<i64>, to: Option<i64>, now_s: i64) -> (i64, i64) {
+    let from = from.unwrap_or(now_s - now_s.rem_euclid(86_400));
+    let to = to.filter(|t| *t > from && *t - from <= 2 * 86_400).unwrap_or(from + 86_400);
+    (from, to)
+}
+
+/// Promises for the Home slot: open, with a due date, due within `ahead_ms` of now or overdue; soonest first.
+/// -> (index, overdue) of the rows to show.
+pub fn due_soon(dues: &[(u64, bool)], now_ms: u64, ahead_ms: u64) -> Vec<(usize, bool)> {
+    let mut v: Vec<(usize, u64, bool)> = dues.iter().enumerate().filter(|(_, (d, open))| *open && *d > 0 && *d <= now_ms + ahead_ms).map(|(i, (d, _))| (i, *d, *d < now_ms)).collect();
+    v.sort_by_key(|(_, d, _)| *d);
+    v.into_iter().map(|(i, _, o)| (i, o)).collect()
 }

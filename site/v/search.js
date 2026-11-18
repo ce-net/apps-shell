@@ -1,17 +1,27 @@
 // The Search tab: one box over everything. Private: search.hybrid as this viewer (repos, talk log, mail, goals, rooms,
 // inbox, calls, people; only what the viewer's own exact grants read). Network: search.mesh's merged answer from every
 // node's own index of repos, cells and docs (internal). Public: what cells published for everyone. Each row says its source and machine and opens where
-// it lives. ?q= in the address keeps a search shareable with whoever may read the same. A repo or file opens here, in
-// the ce-ref viewer (?ref=repo:<repo>/<path>): ref.resolve says where it lives and its hash, ref.pin hands over only
-// those bytes, both asked as this viewer. Never a GitHub link. A CRM person, promise or call, or a call recording, opens
-// in the record screen (?rec=person:<id>, promise:, call:, meet:): read as this viewer from the cell that owns it
-// (crm.people, crm.promises, crm.calls; a recording's passage from search.hybrid). Network also lists cell.search's
-// cells with their trust record, and which machines answered.
-export function mount(root, { h }) {
+// it lives. ?q= in the address keeps a search shareable with whoever may read the same. Every hit is a ce-ref chip
+// opened by host.open through open.with in the pane: a repo or file in ref.view::Text (ref.resolve and ref.pin as this
+// viewer), a CRM person, promise or call, or a call recording in ref.view::Record, a cell in site.cellmap::Cell, an
+// outside origin as a `web:` ref (the Outside view says so). Never a GitHub link, never an http link in this view.
+// Network also lists cell.search's cells with their trust record, and which machines answered.
+export const view = { cell: 'search.hybrid', name: 'Search', speaks: [1], kit: 1 };
+
+// the ce-ref a row names: the opener paths the server gives (?ref=, ?rec=), a cell, or an outside origin as web:
+export function refOf(x) {
+  const o = x.open || '';
+  if (o.startsWith('/search/?ref=')) return o.slice(13);
+  if (o.startsWith('/search/?rec=')) return o.slice(13);
+  if (o === '/core/' && x.kind === 'cell') return 'cell:' + String(x.title || '').split(' · ')[0];
+  if (/^https:\/\/\S+$/.test(o)) return 'web:' + o;
+  return null;
+}
+
+export function mount(root, host) {
+  const { h } = host;
   if (!document.querySelector('link[data-search-css]')) document.head.append(h('link', { rel: 'stylesheet', href: '_k/search.css', 'data-search-css': true }));
   const params = new URLSearchParams(location.search);
-  if (params.get('ref')) return viewRef(root, h, params.get('ref'));
-  if (params.get('rec')) return viewRec(root, h, params.get('rec'), params.get('q') || '');
   let stop = false, seq = 0, show = 'all';
   const input = h('input', { type: 'search', name: 'q', class: 'q', placeholder: 'Repos, docs, people, goals, mail, cells', autocomplete: 'off', 'aria-label': 'Search', maxlength: '300' });
   input.value = params.get('q') || '';
@@ -25,10 +35,10 @@ export function mount(root, { h }) {
 
   const REC = { person: 'CRM person', promise: 'promise', call: 'call', meet: 'transcript' };
   const recKind = x => (x.open || '').startsWith('/search/?rec=') ? (x.open.slice(13).split(':')[0]) : '';
-  const href = x => recKind(x) && last && last.q ? x.open + '&q=' + encodeURIComponent(last.q) : x.open;
+  const title = x => x.title || x.path;
   const row = x => h('div', { class: 'row hit' },
     h('div', {},
-      h('div', { class: 'l' }, x.open && (x.open.startsWith('/') || x.open.startsWith('https://')) ? h('a', { href: href(x), target: x.open.startsWith('/') ? false : '_blank', rel: 'noopener' }, x.title || x.path) : (x.title || x.path)),
+      h('div', { class: 'l' }, refOf(x) ? host.ref.show(refOf(x), { title: title(x) }) : x.open && x.open.startsWith('/') ? h('a', { href: x.open }, title(x)) : title(x)),
       x.snippet ? h('div', { class: 'snip' }, x.snippet.slice(0, 260)) : null,
       h('div', { class: 'm' }, [x.path, x.also && x.also.length ? 'also on ' + x.also.join(', ') : '', x.trust ? x.trust.join(', ') : ''].filter(Boolean).join(' · '))),
     h('div', { class: 'r on' }, h('span', { class: 'tag' + (recKind(x) ? ' crm' : '') }, REC[recKind(x)] || x.kind || x.source || x.from), x.machine ? h('span', { class: 'tag acc' }, x.machine) : null));
@@ -67,82 +77,18 @@ export function mount(root, { h }) {
 
   async function go() {
     const q = input.value.trim();
-    const u = new URL(location.href);
+    const u = new URL(document.URL);
     if (q) u.searchParams.set('q', q); else u.searchParams.delete('q');
     history.replaceState(null, '', u);
     if (!q) { last = null; draw(); return; }
     const my = ++seq;
     out.replaceChildren(h('p', { class: 'note' }, 'Searching every source.'));
-    let d;
-    try {
-      const r = await fetch('api/search?q=' + encodeURIComponent(q), { cache: 'no-store' });
-      d = r.ok ? await r.json() : { error: r.status === 403 ? 'Search is not open to you.' : 'Search did not answer (' + r.status + '); try again.' };
-    } catch (_) { d = { error: 'Search did not answer; try again.' }; }
+    const r = await host.call('search', { q });
+    const d = r.ok ? r.data : { error: r.status === 403 ? 'Search is not open to you.' : r.timeout ? 'Search did not answer in 25 s; try again.' : 'Search did not answer (' + r.status + '); try again.' };
     if (stop || my !== seq) return;
     last = d; draw();
   }
   draw();
   if (input.value) go(); else input.focus();
-  return () => { stop = true; };
-}
-
-// The ce-ref viewer: one file through ref.resolve and ref.pin, as this viewer.
-function viewRef(root, h, ref) {
-  let stop = false;
-  const back = h('a', { class: 'btn', href: '/search/' + (document.referrer.includes('/search/?q=') ? new URL(document.referrer).search : '') }, 'Back to search');
-  const body = h('div', { class: 'refview', 'aria-live': 'polite' }, h('p', { class: 'note' }, 'Resolving ' + ref + ' through ref.resolve.'));
-  const name = ref.replace(/^repo:/, '');
-  root.replaceChildren(h('div', { class: 'crumb' }, 'ce / ', h('a', { href: '/search/' }, 'Search'), ' / ', h('b', {}, name)), h('h1', { class: 'display refname' }, name.split('/').pop()), body);
-  (async () => {
-    let d, st = 0;
-    try {
-      const r = await fetch('api/ref?r=' + encodeURIComponent(ref), { cache: 'no-store' });
-      st = r.status; d = await r.json().catch(() => ({ error: 'no answer (' + r.status + ')' }));
-    } catch (_) { d = { error: 'The viewer did not answer; try again.' }; }
-    if (stop) return;
-    if (st !== 200) { body.replaceChildren(h('p', { class: 'note' }, d.error || ('No answer (' + st + ').')), back); return; }
-    const kb = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
-    body.replaceChildren(
-      h('div', { class: 'glass list sys' },
-        h('h2', {}, h('b', {}, d.repo + '/' + d.path), h('span', {}, kb(d.size))),
-        h('div', { class: 'row' }, h('div', {}, h('div', { class: 'm' }, 'ce-ref'), h('div', { class: 'l mono' }, d.id))),
-        h('div', { class: 'row' }, h('div', {}, h('div', { class: 'm' }, 'pinned'), h('div', { class: 'l mono' }, d.ref))),
-        h('div', { class: 'row' }, h('div', {}, h('div', { class: 'm' }, 'lives on'), h('div', { class: 'l' }, d.node + ' · ' + d.source + ' · read by ' + d.via.join(' and '))))),
-      d.binary ? h('p', { class: 'note' }, 'A binary file (' + kb(d.size) + '); its bytes match ' + d.sha256 + '.')
-        : h('pre', { class: 'glass code', tabindex: '0' }, d.text),
-      d.truncated ? h('p', { class: 'note' }, 'Showing the first 512 KB.') : null,
-      back);
-  })();
-  return () => { stop = true; };
-}
-
-// The record screen: one CRM person, promise or call, or a call recording's passage, read as this viewer from the cell
-// that owns it.
-function viewRec(root, h, rec, q) {
-  let stop = false;
-  const back = h('a', { class: 'btn', href: '/search/' + (q ? '?q=' + encodeURIComponent(q) : '') }, 'Back to search');
-  const body = h('div', { class: 'refview', 'aria-live': 'polite' }, h('p', { class: 'note' }, 'Reading ' + rec + '.'));
-  const KIND = { person: 'CRM person', promise: 'Promise', call: 'Call', meet: 'Call recording' };
-  const kind = rec.split(':')[0];
-  root.replaceChildren(h('div', { class: 'crumb' }, 'ce / ', h('a', { href: '/search/' + (q ? '?q=' + encodeURIComponent(q) : '') }, 'Search'), ' / ', h('b', {}, KIND[kind] || 'Record')), h('h1', { class: 'display refname' }, KIND[kind] || 'Record'), body);
-  (async () => {
-    let d, st = 0;
-    try {
-      const r = await fetch('api/rec?r=' + encodeURIComponent(rec) + (q ? '&q=' + encodeURIComponent(q) : ''), { cache: 'no-store' });
-      st = r.status; d = await r.json().catch(() => ({ error: 'no answer (' + r.status + ')' }));
-    } catch (_) { d = { error: 'The record did not answer; try again.' }; }
-    if (stop) return;
-    if (st !== 200) { body.replaceChildren(h('p', { class: 'note' }, d.error || ('No answer (' + st + ').')), back); return; }
-    root.querySelector('h1').textContent = d.title || KIND[kind];
-    const more = d.search ? h('a', { class: 'btn', href: '/search/?q=' + encodeURIComponent(d.search) }, 'Everything about ' + d.search) : null;
-    body.replaceChildren(
-      h('div', { class: 'glass list sys' },
-        h('h2', {}, h('b', {}, KIND[kind] || 'Record'), h('span', {}, 'from ' + d.cell)),
-        ...(d.fields || []).map(([k, v]) => h('div', { class: 'row' }, h('div', {}, h('div', { class: 'm' }, k), h('div', { class: 'l' }, /^https:\/\//.test(v) ? h('a', { href: v, target: '_blank', rel: 'noopener' }, v) : v))))),
-      d.text ? h('pre', { class: 'glass code prose', tabindex: '0' }, d.text) : null,
-      d.list && d.list.length ? h('div', { class: 'glass list sys' }, h('h2', {}, h('b', {}, d.list_title || 'List'), h('span', {}, String(d.list.length))), ...d.list.map(t => h('div', { class: 'row' }, h('div', {}, h('div', { class: 'l' }, t))))) : null,
-      d.note ? h('p', { class: 'note' }, d.note) : null,
-      h('div', { class: 'acts' }, back, more));
-  })();
   return () => { stop = true; };
 }

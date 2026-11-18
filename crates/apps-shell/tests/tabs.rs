@@ -18,7 +18,7 @@ fn tabs_follow_the_chain() {
     assert!(routes(&[]).is_empty(), "no rights: no tabs");
     assert_eq!(routes(&["approve.inbox:read", "approve.inbox:where:requester=t-approver"]), ["/approvals/"]);
     assert_eq!(routes(&["approve.inbox:read", "cr.shell:open"]), ["/approvals/", "/control-room/"]);
-    assert_eq!(routes(ROOT), ["/foreman/", "/search/", "/approvals/", "/control-room/", "/core/"]);
+    assert_eq!(routes(ROOT), ["/home/", "/foreman/", "/search/", "/approvals/", "/control-room/", "/core/"]);
     assert_eq!(routes(&["search.hybrid:find"]), ["/search/"], "the Search tab needs only search.hybrid:find");
     assert!(routes(&["approve.inbox:where:requester=x"]).is_empty(), "a caveat alone opens nothing");
 }
@@ -29,7 +29,7 @@ fn a_tab_whose_shell_stopped_answering_is_gone() {
     let mut live = all_live(now);
     live.insert("approve.inbox".into(), now - LIVE_MS - 1);
     let r: Vec<String> = tabs_for(&s(ROOT), &live, now).into_iter().map(|t| t.route).collect();
-    assert_eq!(r, ["/foreman/", "/search/", "/control-room/", "/core/"]);
+    assert_eq!(r, ["/home/", "/foreman/", "/search/", "/control-room/", "/core/"]);
     live.remove("site.cellmap");
     assert!(!tabs_for(&s(ROOT), &live, now).iter().any(|t| t.route == "/core/"), "never answered: no tab");
 }
@@ -56,10 +56,7 @@ fn a_call_carries_only_the_viewers_own_rights_in_that_cell() {
 
 #[test]
 fn every_tab_shell_is_granted_its_health_check() {
-    // home.shell's tab came with ce-net-net 7cd4a0f (HOME): this build carries no home.shell contract, so shell_ok never
-    // probes it and the tab is never live here; its health right is granted with the contract, by that slice
-    const NOT_CARRIED: &[&str] = &["home.shell"];
-    for (_, t) in all_tabs().into_iter().filter(|(_, t)| !NOT_CARRIED.contains(&t.shell.name)) {
+    for (_, t) in all_tabs() {
         let need = format!("{}:health", t.shell.name);
         assert!(covers(&s(GRANT), &need), "GRANT lacks {need}");
     }
@@ -72,7 +69,9 @@ fn a_viewer_grant_carries_only_data_cell_rights_with_their_caveats() {
     for c in DATA_CELLS {
         assert!(GRANT.contains(&format!("wire.ws-door:mint-for:{c}").as_str()));
     }
-    assert!(!GRANT.iter().any(|g| g.contains('*') || g.ends_with(":read")), "the shell holds no data right itself");
+    // state.store:read is the door right to ask the store at all; which collection it may read is the separate
+    // collection cap (home/links only, `state-home-links.hex`), so it is the one `:read` the shell holds
+    assert!(!GRANT.iter().any(|g| g.contains('*') || (g.ends_with(":read") && *g != "state.store:read")), "the shell holds no data right itself");
 }
 
 #[test]

@@ -73,7 +73,7 @@ body{margin:0;background:var(--ground);color:var(--ink);font:400 var(--t-base)/1
     padding:4px 8px calc(4px + env(safe-area-inset-bottom));border:0;border-top:1px solid var(--line);border-radius:0}
   .rail button,.rail a{flex:1;padding:6px 2px}
   .rail [aria-pressed=true]::before,.rail [aria-current=page]::before{left:20%;right:20%;top:-4px;bottom:auto;width:auto;height:2px}
-  .rail.static{position:fixed;height:54px}}
+  .rail.static{position:fixed;top:auto;bottom:0;height:54px}}
 
 /* btn: top-right caps buttons in one glass group (ADD YOUR TWIN, CELLS 5) */
 .btns{display:flex;gap:2px;padding:3px}
@@ -126,3 +126,59 @@ body{margin:0;background:var(--ground);color:var(--ink);font:400 var(--t-base)/1
 .fade-in{animation:ce-in var(--fast) ease-out both}
 @keyframes ce-in{from{opacity:0}to{opacity:1}}
 @media (prefers-reduced-motion:reduce){.fade-in,.scrub .live i{animation:none}.ring .fg{transition:none}}
+
+/* RefChip: a ce-ref, never an underlined URL. Kind mark, title, holder or sub, state. States: live, as of, pinned,
+   refused (lock), unknown (struck), outside (the outside web). A chip is a button: it opens through open.with. */
+.chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:28px;padding:3px 8px 3px 4px;background:var(--well);color:var(--ink);
+  border:1px solid var(--line);border-radius:var(--r-sm);font:500 12px/1.3 var(--sans);text-align:left;cursor:pointer;
+  transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease)}
+.chip:hover{background:var(--raise);border-color:var(--line-2)}
+.chip:focus-visible{outline:1px solid var(--acc);outline-offset:1px}
+.chip .k{flex:none;font:500 9px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);background:var(--press);border-radius:var(--r-sm);padding:2px 5px;font-style:normal}
+.chip .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip .s{flex:0 1 auto;max-width:40%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:400 10.5px var(--mono);color:var(--ink-2)}
+.chip .st{flex:none;font:500 9px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+.chip.block{display:flex;width:100%}
+.chip[data-state=pinned] .st{color:var(--live)}
+.chip[data-state=refused]{border-style:dashed}.chip[data-state=refused] .st{color:var(--warn)}
+.chip[data-state=unknown] .t{text-decoration:line-through;color:var(--ink-2)}
+.chip[data-state=outside]{border-color:var(--acc-soft)}.chip[data-state=outside] .st{color:var(--acc)}
+.chipline{display:flex;flex-wrap:wrap;gap:6px}
+
+/* SlotFrame: a Home slot's frame. Title, count, fold, one state line (loading, empty, refused, timeout, down). */
+.slotframe{margin:0 0 10px;min-width:0}
+.slotframe>header{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 6px}
+.slotframe h2{margin:0;font:500 9.5px var(--sans);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--ink-2);display:flex;gap:8px;align-items:baseline}
+.slotframe h2 b{color:var(--ink);font-weight:500}
+.slotframe h2 .cnt{font:600 10px var(--mono);color:var(--acc)}
+.slotframe .fold{padding:3px 6px;font-size:9.5px}
+.slotframe .stline{padding:2px 12px 10px;font:400 11px var(--mono);color:var(--ink-2)}
+.slotframe[data-state=refused] .stline{color:var(--warn)}
+.slotframe[data-state=down] .stline,.slotframe[data-state=timeout] .stline{color:var(--bad)}
+.slotframe .body{padding:0 12px 12px;display:flex;flex-direction:column;gap:6px}
+.slotframe.folded .body,.slotframe.folded .stline{display:none}
+.slotframe .item{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;min-width:0}
+.slotframe .item .when{font:500 11px var(--mono);color:var(--ink-2);font-variant-numeric:tabular-nums;min-width:44px}
+.slotframe .item .chip{min-width:0}
+.slotframe .item.overdue .when{color:var(--bad)}
+
+/* Bar: the ce-net browser's address line. Takes a ce-ref (short or ce-ref://), a cell path, or words. */
+.bar{flex:1;display:flex;align-items:center;gap:4px;max-width:720px;margin:0 14px;padding:3px}
+.bar .mark{font:400 10px var(--disp);letter-spacing:var(--track-disp);color:var(--acc);padding:0 6px}
+.bar .q{flex:1;min-width:0;background:transparent;border:0;color:var(--ink);font:400 12.5px var(--mono);padding:6px 4px;outline:none}
+.bar .q::placeholder{color:var(--ink-3)}
+.bar:focus-within{box-shadow:inset 0 -1px 0 var(--acc)}
+
+/* Pane: what open.with chose, mounted. Side on a desk, full screen on a phone. */
+.pane{position:fixed;z-index:30;display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--lift)}
+.pane[hidden]{display:none}
+.pane.side{top:12px;right:12px;bottom:12px;width:min(46vw,720px)}
+.pane.full{inset:0;border-radius:0}
+.pane .phead{display:flex;align-items:center;gap:6px;padding:8px;border-bottom:1px solid var(--line)}
+.pane .phead .pref{flex:1;min-width:0}
+.pane .pbody{flex:1;overflow:auto;padding:14px}
+.pane .pnote{color:var(--ink-2);font:400 12px/1.5 var(--sans);margin:0 0 12px}
+.pane .pnote b{color:var(--ink);font-family:var(--mono);font-weight:500}
+.pane .pview{min-height:100%}
+.frame.with-pane .page{padding-right:calc(min(46vw,720px) + 36px)}
+@media (max-width:700px){.frame.with-pane .page{padding-right:16px}.bar{margin:0 8px}.bar .mark{display:none}}
