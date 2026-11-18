@@ -1,0 +1,72 @@
+[
+ {
+  "n": "Feed tab is in the bar",
+  "ok": true,
+  "d": ""
+ },
+ {
+  "n": "no horizontal scroll",
+  "ok": true,
+  "d": "1280 vs 1280"
+ },
+ {
+  "n": "the alarm is one card \"rang 28 times\"",
+  "ok": true,
+  "d": "[\"rang 28 times, from 07:26 to 07:29\"]"
+ },
+ {
+  "n": "the card says n lines",
+  "ok": true,
+  "d": ""
+ },
+ {
+  "n": "link chips on a card",
+  "ok": true,
+  "d": ""
+ },
+ {
+  "n": "Read all shows the thread in place",
+  "ok": true,
+  "d": "5 lines"
+ },
+ {
+  "n": "Join closes the alarm and it leaves For you",
+  "ok": true,
+  "d": "115 ms"
+ },
+ {
+  "n": "closed alarms are collapsed under Alarms",
+  "ok": true,
+  "d": ""
+ },
+ {
+  "n": "a new fixture row appears within 2 s, no reload",
+  "ok": true,
+  "d": "880 ms"
+ },
+ {
+  "n": "Mark all read sets the count to 0",
+  "ok": true,
+  "d": "3 unread -> 0"
+ },
+ {
+  "n": "the count stays 0 after reload",
+  "ok": true,
+  "d": "0 unread"
+ },
+ {
+  "n": "Everything shows the hidden counts",
+  "ok": true,
+  "d": "Folded away: 1 agent note, 3 machine lines, 1 receipt, 28 repeats."
+ },
+ {
+  "n": "a hidden line shows its rule id",
+  "ok": true,
+  "d": "foreman/probe-test06:38probe-testrule to-lanenote for another lane"
+ },
+ {
+  "n": "no console errors, no exceptions, no CSP violation",
+  "ok": true,
+  "d": ""
+ }
+]

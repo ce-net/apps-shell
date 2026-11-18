@@ -42,6 +42,59 @@ function say(crumb, title, line, link) {
     h('p', { class: 'sub' }, line), link ? h('p', {}, h('a', { class: 'btn primary', href: link[1] }, link[0])) : null);
 }
 
+// The host of a view that declares `view = { cell, ... }`: its data comes from that one cell, through this gateway's
+// relay (`api/cell/<cell>/<Op>`, as the signed-in person; the cell's own gate decides), never from a URL the view builds.
+// call(op, req) -> Promise of the answer (rejects with an Error that has .status and .refused);
+// watch(op, req, onDelta) long-polls (req may be a function giving the current request): onDelta(answer) for each
+// answer, onDelta(null, error) for a failure, then retries with backoff; returns stop().
+// open(target): https links open in a new tab, a ce-ref opens in the reference viewer (the search tab's).
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function hostFor(view, tab) {
+  const host = { h, tab };
+  if (!view || typeof view.cell !== 'string' || !/^[a-z0-9.-]+$/.test(view.cell)) return host;
+  const cell = view.cell;
+  const call = async (op, req, signal) => {
+    if (!/^[A-Za-z]{1,32}$/.test(op)) throw new Error('bad op');
+    let r;
+    try {
+      r = await fetch('api/cell/' + cell + '/' + op, { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', cache: 'no-store', body: JSON.stringify(req == null ? null : req), signal });
+    } catch (e) { if (signal && signal.aborted) throw e; throw Object.assign(new Error('no connection'), { status: 0 }); }
+    let body = null;
+    try { body = await r.json(); } catch (_) {}
+    if (!r.ok) throw Object.assign(new Error((body && body.error) || 'HTTP ' + r.status), { status: r.status, refused: r.status === 403 });
+    return body;
+  };
+  host.call = (op, req) => call(op, req);
+  host.watch = (op, req, onDelta) => {
+    let stopped = false, ctl = null, back = 1000;
+    (async () => {
+      while (!stopped) {
+        const t0 = Date.now();
+        ctl = new AbortController();
+        try {
+          const d = await call(op, typeof req === 'function' ? req() : req, ctl.signal);
+          back = 1000;
+          if (!stopped) onDelta(d);
+          const spent = Date.now() - t0;
+          if (spent < 200) await sleep(200 - spent);
+        } catch (e) {
+          if (stopped) return;
+          onDelta(null, e);
+          await sleep(back);
+          back = Math.min(back * 2, 30000);
+        }
+      }
+    })();
+    return () => { stopped = true; if (ctl) ctl.abort(); };
+  };
+  host.open = target => {
+    const t = String(target || '');
+    if (/^https:\/\//.test(t)) window.open(t, '_blank', 'noopener,noreferrer');
+    else if (t) location.assign('/search/?' + (t.startsWith('repo:') ? 'ref=' : 'q=') + encodeURIComponent(t));
+  };
+  return host;
+}
+
 async function tick() {
   let r;
   try { r = await fetch('tabs.json', { cache: 'no-store', credentials: 'same-origin' }); } catch (_) { return; }
@@ -65,7 +118,7 @@ async function tick() {
   if (mounted) { mounted.stop(); mounted = null; }
   const mod = await import('../' + here.view);
   main.replaceChildren();
-  mounted = { view: here.view, stop: mod.mount(main, { h, tab: here }) };
+  mounted = { view: here.view, stop: mod.mount(main, hostFor(mod.view, here)) };
 }
 
 tick();

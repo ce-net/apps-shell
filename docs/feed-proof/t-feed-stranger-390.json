@@ -1,0 +1,37 @@
+[
+ {
+  "n": "stranger: no Feed tab in the bar",
+  "ok": true,
+  "d": "SEARCH CE LIGHT CE / APPS CLOSED HERE. This tab is not open to you now, or none of its cells answers. Your open tabs are"
+ },
+ {
+  "n": "stranger: /v/feed.js 404",
+  "ok": true,
+  "d": "{\"js\":404,\"page\":403,\"mark\":403,\"ui\":403,\"cache\":404}"
+ },
+ {
+  "n": "stranger: POST /api/cell/feed.view/Page 403",
+  "ok": true,
+  "d": ""
+ },
+ {
+  "n": "stranger: Mark 403, Ui 403 or 404, /_c/ 404",
+  "ok": true,
+  "d": ""
+ },
+ {
+  "n": "stranger: 11 responses received, none contains \"feed.view\"",
+  "ok": true,
+  "d": ""
+ },
+ {
+  "n": "stranger: none contains the bundle hash",
+  "ok": true,
+  "d": ""
+ },
+ {
+  "n": "stranger: none contains the word Feed as a tab or view name beyond the URL",
+  "ok": true,
+  "d": ""
+ }
+]

@@ -42,17 +42,19 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint-for:crm.people",
     "wire.ws-door:mint-for:crm.promises",
     "wire.ws-door:mint-for:crm.calls",
+    "wire.ws-door:mint-for:feed.view",
     "approve.inbox:health",
     "site.cellmap:health",
     "foreman.shell:health",
     "cr.shell:health",
     "search.hybrid:health",
+    "feed.view:health",
     "delegate:1",
 ];
 
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
 pub const DATA_CELLS: &[&str] =
-    &["approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls"];
+    &["approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls", "feed.view"];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
 pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
@@ -281,6 +283,8 @@ pub fn view_of(route: &str) -> Option<&'static str> {
         "/approvals/" => Some("v/approvals.js"),
         "/core/" => Some("v/core.js"),
         "/search/" => Some("v/search.js"),
+        // not a file of this site: the module the feed cell ships (`GET /v/feed.js` asks its `Ui`)
+        "/feed/" => Some("v/feed.js"),
         _ => None,
     }
 }

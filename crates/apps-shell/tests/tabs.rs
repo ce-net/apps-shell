@@ -56,7 +56,10 @@ fn a_call_carries_only_the_viewers_own_rights_in_that_cell() {
 
 #[test]
 fn every_tab_shell_is_granted_its_health_check() {
-    for (_, t) in all_tabs() {
+    // home.shell's tab came with ce-net-net 7cd4a0f (HOME): this build carries no home.shell contract, so shell_ok never
+    // probes it and the tab is never live here; its health right is granted with the contract, by that slice
+    const NOT_CARRIED: &[&str] = &["home.shell"];
+    for (_, t) in all_tabs().into_iter().filter(|(_, t)| !NOT_CARRIED.contains(&t.shell.name)) {
         let need = format!("{}:health", t.shell.name);
         assert!(covers(&s(GRANT), &need), "GRANT lacks {need}");
     }
@@ -196,4 +199,50 @@ fn cell_search_and_the_crm_cells_are_minted_for_and_only_read() {
     assert!(!ROOT.iter().any(|a| a.ends_with(":write") || a.ends_with(":reindex") || a.ends_with(":extract")));
     // a viewer grant never carries a wildcard into the CRM cells
     assert_eq!(viewer_grant(&s(&["crm.people:*", "crm.people:read"])), s(&["crm.people:read"]));
+}
+
+#[test]
+fn the_feed_tab_needs_feed_view_read_and_its_view_is_the_cells_own() {
+    let now = 1_000_000;
+    let live = all_live(now);
+    let routes = |a: &[&str]| tabs_for(&s(a), &live, now).into_iter().map(|t| t.route).collect::<Vec<_>>();
+    assert_eq!(routes(&["feed.view:read"]), ["/feed/"]);
+    assert_eq!(routes(&["feed.view:read", "feed.view:mark", "feed.view:close"]), ["/feed/"]);
+    assert!(routes(&["feed.view:mark", "feed.view:close", "feed.view:health"]).is_empty(), "only :read opens the tab");
+    assert!(routes(&["feed.view:where:person=x"]).is_empty(), "a caveat alone opens nothing");
+    assert!(!routes(ROOT).contains(&"/feed/".to_string()), "shadow only: nothing Leif sees switches");
+    assert_eq!(view_of("/feed/"), Some("v/feed.js"));
+    // the module is not a file of this site: a viewer without the tab has nothing to ask for
+    let site = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site/v/feed.js");
+    assert!(!site.exists(), "the Feed module is the feed cell's, served from its Ui, not from site/");
+}
+
+#[test]
+fn the_shells_own_grant_gains_only_the_feed_mint_and_health() {
+    let feed: Vec<&&str> = GRANT.iter().filter(|g| g.contains("feed")).collect();
+    assert_eq!(feed, [&"wire.ws-door:mint-for:feed.view", &"feed.view:health"]);
+    // a viewer grant carries the viewer's own feed rights and nothing of other cells
+    let g = viewer_grant(&s(&["feed.view:read", "feed.view:mark", "foreman.shell:open", "feed.view:*"]));
+    assert_eq!(g, s(&["feed.view:mark", "feed.view:read"]));
+}
+
+/// Everything this site sends to anyone (page, kit, shell script, views) must not name the feed cell or hold its
+/// bundle: a stranger's browser learns nothing of it (the module itself comes only through the cell's `Ui`).
+#[test]
+fn no_file_of_the_site_names_the_feed_cell() {
+    fn walk(d: &std::path::Path, hits: &mut Vec<String>) {
+        for e in std::fs::read_dir(d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, hits);
+            } else if let Ok(t) = std::fs::read_to_string(&p) {
+                if t.contains("feed.view") || t.contains("api/cell/") && !p.ends_with("shell.js") {
+                    hits.push(p.display().to_string());
+                }
+            }
+        }
+    }
+    let mut hits = vec![];
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site"), &mut hits);
+    assert!(hits.is_empty(), "{hits:?}");
 }

@@ -1,7 +1,7 @@
 //! `apps-shell serve`: the apps.shell cell behind this machine's door, its liveness loop, and its gateway face.
 //!
 //! The face listens on loopback once per tab route it serves (`$APPS_SHELL_HTTP`, default
-//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
+//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
 //! the prefix cut and the person signed (`X-Ce-Person*`, the gate's per-host key, repo:ui-cells site-gateway's check).
 //! - `GET /` the page (the same bytes for everyone; it names no system), `/_k/*` the kit;
 //! - `GET /tabs.json` this viewer's tabs: allowed by their abilities and live (their shell answered HealthOp by name
@@ -17,6 +17,11 @@
 //! - `GET /api/ref?r=repo:<repo>/<path>[@<commit>]`: the Search tab's file viewer, through the cell reference system
 //!   as the viewer: ref.resolve `Resolve` (where it lives, its ce-ref:// id and content hash) and ref.pin `Fetch` (only
 //!   the bytes with that hash); with no commit, the HEAD of the checkout those cells read on this node;
+//! - the Feed tab (`/feed/`): `GET /v/feed.js` is the view module the feed cell itself ships (its op `Ui`, asked as the
+//!   viewer; 404 to a viewer without the tab), `GET /_c/<sha256>.js` its immutable cached copy, and `POST
+//!   /api/cell/<cell>/<Op>` the data relay for the ops Page, Topic, Changes, Mark and Close only: each is called with a
+//!   grant wire.ws-door minted for the viewer (their own `feed.view:*` rights and a `feed.view:where:person=<them>`
+//!   caveat), so the feed cell's own gate decides, never this one;
 //! - `GET /api/inbox`, `/api/card?b=<id>`, `/api/cellmap`: the data cells called by name with a token attenuated
 //!   from this cell's grant to exactly the viewer's abilities in that cell (their row caveats included), so the data
 //!   cell's own gate decides, for this viewer.
@@ -70,6 +75,7 @@ async fn shell_ok(shell: &str) -> bool {
         "foreman.shell" => health!(foreman_shell_api::ForemanShell, foreman_shell_api::HealthOp, "foreman.shell:health"),
         "cr.shell" => health!(cr_shell_api::CrShell, cr_shell_api::HealthOp, "cr.shell:health"),
         "search.hybrid" => health!(hybrid_api::SearchHybrid, hybrid_api::HealthOp, "search.hybrid:health"),
+        "feed.view" => health!(feed_view_api::FeedView, feed_view_api::HealthOp, "feed.view:health"),
         // a shell whose contract this build does not carry yet: never live here (its system shows in site.cellmap)
         _ => None,
     };
@@ -105,9 +111,13 @@ impl Face {
 }
 
 async fn reply(s: &mut TcpStream, status: &str, ty: &str, body: &[u8], head: bool) {
+    reply_cached(s, status, ty, body, head, "no-store").await
+}
+
+async fn reply_cached(s: &mut TcpStream, status: &str, ty: &str, body: &[u8], head: bool, cache: &str) {
     let csp = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self' https://ce-net.com https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
     let h = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {ty}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: {csp}\r\nVary: X-Ce-Person\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {ty}\r\nContent-Length: {}\r\nCache-Control: {cache}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: {csp}\r\nVary: X-Ce-Person\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = s.write_all(h.as_bytes()).await;
@@ -200,6 +210,73 @@ mod door_api {
         ops {
             1 => HealthOp(()) -> Health, needs "wire.ws-door:health";
             2 => Mint(MintReq) -> Result<Minted, MintError>, needs "wire.ws-door:mint";
+        }
+    }
+}
+
+/// feed.view's contract (repo:feed-view crates/feed-view-api, major 2), copied verbatim like door_api: its doc comments
+/// are part of the schema hash (0xf226abb16f72c818, pinned by a test), so not a character may change.
+#[allow(dead_code)]
+mod feed_view_api {
+    ce_wire::api! {
+        api FeedView = "feed.view", version 2;
+        types {
+            /// Health contract: these three fields, in this order, in every cell.
+            pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+            /// The class a rule gave a row; `Duplicate` is applied after the topic is known (folded, not drawn).
+            pub enum Class { Ask, Result, Update, Alarm, Monitor, Receipt, AgentNote, Own, Duplicate }
+            pub enum Tab { ForYou, Alarms, Everything }
+            /// Why a topic is closed.
+            pub enum Why { Held, Dismissed, Quiet, Recovered }
+            /// `before`: a card id; the page holds the cards after it in page order. `limit` 0 means 50, at most 200.
+            pub struct Filter { pub tab: Tab, pub unread_only: bool, pub lane: Option<String>,
+                                pub before: Option<String>, pub limit: u32 }
+            /// `kind`: ref | url | join.
+            pub struct Link { pub label: String, pub target: String, pub kind: String }
+            pub struct Alarm { pub rings: u32, pub first_at_utc: String, pub last_at_utc: String, pub join: Option<Link> }
+            /// One topic. `lines`: rows drawn in its thread; `folded`: rows folded into it; `unread`: drawn lines after
+            /// the viewer's mark; `needs`: it holds an Ask; `long`: the newest line is longer than title plus summary.
+            pub struct Card {
+                pub id: String, pub class: Class, pub title: String, pub summary: String, pub lane: String,
+                pub who: String, pub first_n: u64, pub last_n: u64, pub at_utc: String, pub lines: u32, pub folded: u32,
+                pub unread: u32, pub needs: bool, pub closed: Option<Why>, pub links: Vec<Link>, pub alarm: Option<Alarm>,
+                pub long: bool
+            }
+            /// Rows of the window by what keeps them out of the cards: agent notes (rules to-lane, harness), monitor
+            /// lines, receipts, and repeats folded into a card.
+            pub struct Hidden { pub agent_notes: u32, pub monitor: u32, pub receipts: u32, pub duplicates: u32 }
+            /// `more`: the card id to pass as `before` for the next page. `unread_total`: unread cards under For you.
+            /// `rules`: the rule version the cards were built with.
+            pub struct FeedPage { pub cards: Vec<Card>, pub more: Option<String>, pub cursor: String, pub unread_total: u32,
+                              pub hidden: Hidden, pub rules: String }
+            /// One row of a thread with the class and rule that placed it; `delivered`: the receipt that followed it.
+            pub struct Line { pub n: u64, pub at_utc: String, pub who: String, pub lane: String, pub text: String,
+                              pub class: Class, pub rule: String, pub delivered: Option<String> }
+            pub struct Thread { pub card: Card, pub lines: Vec<Line> }
+            pub struct MarkReq { pub ids: Vec<String>, pub read: bool }
+            pub struct Marked { pub unread_total: u32 }
+            pub struct CloseReq { pub id: String, pub why: Why }
+            /// Answers at once when the filtered cards differ from `after`, else holds up to `wait_ms` (at most 25,000).
+            pub struct ChangesReq { pub after: String, pub filter: Filter, pub wait_ms: u32 }
+            pub struct Delta { pub put: Vec<Card>, pub gone: Vec<String>, pub cursor: String, pub unread_total: u32 }
+            pub struct UiReq { pub view: String }
+            pub struct Bundle { pub sha256: String, pub speaks: Vec<u16>, pub kit: u16, pub bytes: Vec<u8> }
+            /// Row numbers, both ends included.
+            pub struct Window { pub from_n: u64, pub to_n: u64 }
+            /// Every row talk.messages List shows in the window is in exactly one card, folded into one, or hidden with a
+            /// rule id: `rows == in_cards + folded + hidden`, `unaccounted` (row numbers) empty.
+            pub struct Report { pub rows: u64, pub in_cards: u64, pub folded: u64, pub hidden: u64, pub unaccounted: Vec<u64> }
+            pub enum FeedError { Source(String), Store(String), NoSuchTopic(String), NoSuchView(String) }
+        }
+        ops {
+            1 => HealthOp(()) -> Health,                       needs "feed.view:health";
+            2 => Page(Filter) -> Result<FeedPage, FeedError>,  needs "feed.view:read", deadline_ms 20000;
+            3 => Topic(String) -> Result<Thread, FeedError>,   needs "feed.view:read", deadline_ms 20000;
+            4 => Changes(ChangesReq) -> Result<Delta, FeedError>, needs "feed.view:read", deadline_ms 45000;
+            5 => Mark(MarkReq) -> Result<Marked, FeedError>,   needs "feed.view:mark", deadline_ms 20000;
+            6 => Close(CloseReq) -> Result<Card, FeedError>,   needs "feed.view:close", deadline_ms 20000;
+            7 => Ui(UiReq) -> Result<Bundle, FeedError>,       needs "feed.view:read";
+            8 => Compare(Window) -> Result<Report, FeedError>, needs "feed.view:verify", deadline_ms 60000;
         }
     }
 }
@@ -1014,13 +1091,25 @@ fn b64u(s: &str) -> Option<Vec<u8>> {
 
 const VIEWER_TTL_S: u32 = 900;
 
+/// A person id safe to put in a caveat: 1 to 64 of `[a-z0-9._-]`.
+fn person_ok(p: &str) -> bool {
+    (1..=64).contains(&p.len()) && p.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
+}
+
 /// The viewer's grant for these abilities: the cached one while it has 2 minutes left and the same abilities (a
 /// people-file change mints a new one at once), else a fresh Mint.
 async fn viewer(person: &str, abilities: &[String]) -> Result<Arc<ViewerGrant>, String> {
     use door_api::*;
-    let want = viewer_grant(abilities);
+    let mut want = viewer_grant(abilities);
     if want.is_empty() {
         return Err("refused".into());
+    }
+    // the feed cell keeps read state per person: the verified person rides in the grant as a row caveat of that cell
+    // (`feed.view:where:person=<id>`, covered by mint-for:feed.view); never a request field, never the people file's
+    if want.iter().any(|a| a.starts_with("feed.view:")) && person_ok(person) {
+        want.push(format!("feed.view:where:person={person}"));
+        want.sort();
+        want.dedup();
     }
     let grants = GRANTS.get_or_init(Arc::default).clone();
     let slot = format!("{person}\n{}", want.join(","));
@@ -1059,6 +1148,80 @@ async fn client<A: ce_wire::Api>(person: &str, abilities: &[String]) -> Result<c
     let mut c = tokio::time::timeout(Duration::from_secs(4), ce_wire::Client::<A>::by_name(tok)).await.map_err(|_| "no replica answered in 4 s".to_string())?.map_err(|e| e.to_string())?;
     c.deadline = Duration::from_secs(10);
     Ok(c)
+}
+
+/// The ops the Feed relay passes, and nothing else.
+const FEED_OPS: &[&str] = &["Page", "Topic", "Changes", "Mark", "Close"];
+const FEED_BODY_MAX: usize = 64 * 1024;
+
+/// The view modules fetched from feed.view `Ui`, by sha256: the immutable copies at `/_c/<sha256>.js`.
+static BUNDLES: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, Arc<Vec<u8>>>>> = std::sync::OnceLock::new();
+
+/// `GET /v/feed.js`: the Feed view module as the viewer's own `Ui` call hands it over, checked against its hash and the
+/// majors this shell speaks (contract 2, kit 1).
+async fn feed_bundle(person: &str, abilities: &[String]) -> Result<(String, Arc<Vec<u8>>), String> {
+    use feed_view_api::*;
+    use sha2::Digest;
+    let ab = for_cell(abilities, "feed.view", "feed.view:read").ok_or("refused")?;
+    let c = client::<FeedView>(person, &ab).await?;
+    let b = match c.call::<Ui>(&UiReq { view: "Feed".into() }).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => return Err(format!("{e:?}")),
+        Err(e) => return Err(e.to_string()),
+    };
+    let sha: String = sha2::Sha256::digest(&b.bytes).iter().map(|x| format!("{x:02x}")).collect();
+    if sha != b.sha256 || !b.speaks.contains(&2) || b.kit != 1 || b.bytes.is_empty() || b.bytes.len() > VIEW_MAX {
+        return Err("the bundle does not match its hash, or speaks other majors".into());
+    }
+    let bytes = Arc::new(b.bytes);
+    BUNDLES.get_or_init(Default::default).lock().unwrap().insert(sha.clone(), bytes.clone());
+    Ok((sha, bytes))
+}
+
+/// `POST /api/cell/feed.view/<Op>`: one op of the feed cell as the viewer (JSON in, JSON out). A refusal of the cell
+/// is a 403 with no more than that; the cell's own errors keep their kind.
+async fn feed_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -> (&'static str, Vec<u8>) {
+    use feed_view_api::*;
+    let err = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+    if !FEED_OPS.contains(&op) {
+        return err("404 Not Found", "no such op".into());
+    }
+    let Some(ab) = for_cell(abilities, "feed.view", "feed.view:read") else { return err("403 Forbidden", "refused".into()) };
+    let c = match client::<FeedView>(person, &ab).await {
+        Ok(mut c) => {
+            // Page may build the card index of a fresh process (about 10 s); Changes holds up to 25 s
+            c.deadline = Duration::from_secs(if op == "Changes" { 40 } else { 25 });
+            c
+        }
+        Err(e) if e == "refused" => return err("403 Forbidden", "refused".into()),
+        Err(e) => return err("503 Service Unavailable", e),
+    };
+    fn out<T: serde::Serialize>(r: Result<Result<T, FeedError>, ce_wire::WireError>) -> (&'static str, Vec<u8>) {
+        let e = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+        match r {
+            Ok(Ok(v)) => ("200 OK", json(&v)),
+            Ok(Err(FeedError::NoSuchTopic(t))) => e("404 Not Found", format!("no such topic {t}")),
+            Ok(Err(FeedError::NoSuchView(t))) => e("404 Not Found", format!("no such view {t}")),
+            Ok(Err(FeedError::Source(m))) | Ok(Err(FeedError::Store(m))) => e("502 Bad Gateway", m),
+            Err(ce_wire::WireError::Refused(_)) => e("403 Forbidden", "refused".into()),
+            Err(x) => e("503 Service Unavailable", x.to_string()),
+        }
+    }
+    macro_rules! call_op {
+        ($op:ty) => {{
+            match serde_json::from_slice(body) {
+                Ok(req) => out(c.call::<$op>(&req).await),
+                Err(x) => err("400 Bad Request", format!("body: {x}")),
+            }
+        }};
+    }
+    match op {
+        "Page" => call_op!(Page),
+        "Topic" => call_op!(Topic),
+        "Changes" => call_op!(Changes),
+        "Mark" => call_op!(Mark),
+        _ => call_op!(Close),
+    }
 }
 
 async fn badge(person: &str, abilities: &[String]) -> Option<u32> {
@@ -1168,10 +1331,12 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
     let mut first = head.lines().next().unwrap_or("").split(' ');
     let (method, path) = (first.next().unwrap_or(""), first.next().unwrap_or("/").to_string());
     let is_head = method == "HEAD";
-    if method != "GET" && !is_head {
+    let route = path.split(['?', '#']).next().unwrap_or("/").to_string();
+    // the one POST: the Feed data relay (JSON in, JSON out; a cross-site form cannot send application/json)
+    let relay = method == "POST" && route.starts_with("/api/cell/feed.view/");
+    if method != "GET" && !is_head && !relay {
         return reply(&mut s, "405 Method Not Allowed", "text/plain", b"", false).await;
     }
-    let route = path.split(['?', '#']).next().unwrap_or("/").to_string();
     if route == "/" || route == "/index.html" {
         return reply(&mut s, "200 OK", "text/html; charset=utf-8", file("index.html").unwrap_or_default(), is_head).await;
     }
@@ -1191,10 +1356,55 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         eprintln!("apps-shell: {person} {}: {} tab(s)", f.route, t.tabs.len());
         return reply(&mut s, "200 OK", "application/json", &json(&t), is_head).await;
     }
+    if relay {
+        let live = f.live.read().await.clone();
+        let mine = tabs_for(&ab, &live, ui_chain::now_ms());
+        let op = route.strip_prefix("/api/cell/feed.view/").unwrap_or("");
+        if !mine.iter().any(|t| t.route == "/feed/") {
+            return reply(&mut s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await;
+        }
+        let low = head.to_ascii_lowercase();
+        let len: usize = low.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        let json_ct = low.lines().any(|l| l.starts_with("content-type:") && l.contains("application/json"));
+        if !json_ct || len > FEED_BODY_MAX {
+            return reply(&mut s, "400 Bad Request", "application/json", b"{\"error\":\"want application/json, at most 64 KB\"}", false).await;
+        }
+        let at = buf.windows(4).position(|x| x == b"\r\n\r\n").map_or(buf.len(), |i| i + 4);
+        let mut body = buf[at..].to_vec();
+        while body.len() < len {
+            let mut chunk = [0u8; 4096];
+            match tokio::time::timeout(Duration::from_secs(20), s.read(&mut chunk)).await {
+                Ok(Ok(n)) if n > 0 => body.extend_from_slice(&chunk[..n]),
+                _ => return,
+            }
+        }
+        body.truncate(len);
+        let (st, out) = feed_relay(&person, &ab, op, &body).await;
+        return reply(&mut s, st, "application/json", &out, false).await;
+    }
+    if let Some(sha) = route.strip_prefix("/_c/").and_then(|r| r.strip_suffix(".js")) {
+        // the immutable copy of a bundle this node fetched, only for a viewer who has the tab
+        let live = f.live.read().await.clone();
+        let has = tabs_for(&ab, &live, ui_chain::now_ms()).iter().any(|t| t.route == "/feed/");
+        let hit = has.then(|| BUNDLES.get().and_then(|m| m.lock().unwrap().get(sha).cloned())).flatten();
+        return match hit {
+            Some(b) => reply_cached(&mut s, "200 OK", "text/javascript; charset=utf-8", &b, is_head, "private, max-age=31536000, immutable").await,
+            None => reply(&mut s, "404 Not Found", "text/plain", b"no such file", is_head).await,
+        };
+    }
     if let Some(v) = route.strip_prefix("/v/") {
         let live = f.live.read().await.clone();
         let mine = tabs_for(&ab, &live, ui_chain::now_ms());
         let name = format!("v/{v}");
+        if name == "v/feed.js" && mine.iter().any(|t| view_of(&t.route) == Some("v/feed.js")) {
+            return match feed_bundle(&person, &ab).await {
+                Ok((_, b)) => reply(&mut s, "200 OK", "text/javascript; charset=utf-8", &b, is_head).await,
+                Err(e) => {
+                    eprintln!("apps-shell: the Feed view for {person}: {e}");
+                    reply(&mut s, "503 Service Unavailable", "text/plain", b"not answering", is_head).await
+                }
+            };
+        }
         // the same 404 for a view that does not exist and one this viewer may not have
         return match mine.iter().any(|t| view_of(&t.route) == Some(name.as_str())).then(|| file(&name)).flatten() {
             Some(b) => reply(&mut s, "200 OK", "text/javascript; charset=utf-8", b, is_head).await,
@@ -1232,7 +1442,7 @@ async fn serve() -> Result<(), String> {
     tokio::spawn(liveness(live.clone()));
     let person_key: PathBuf = env_or("CE_GATE_PERSON_KEY", format!("{}/.config/work-show/person-key", home())).into();
     let people: PathBuf = env_or("APPS_SHELL_PEOPLE", format!("{}/.config/apps-shell/people.json", home())).into();
-    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/".into()).split(',') {
+    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/".into()).split(',') {
         let (addr, route) = pair.split_once('=').ok_or_else(|| format!("APPS_SHELL_HTTP: {pair}: want <addr>=<route>"))?;
         let f = Arc::new(Face { route: route.into(), live: live.clone(), person_key: person_key.clone(), people: people.clone() });
         let addr = addr.to_string();
@@ -1298,6 +1508,19 @@ mod contracts {
     }
     /// cell.search, crm.people, crm.promises and crm.calls as foreman-ops-1's door listed them (`ce cell ops <api>
     /// --json`, 2026-11-17).
+    /// feed.view major 2 as repo:feed-view crates/feed-view-api has it (commit 32b4c3a): another hash and every call is
+    /// refused as another api. Its rights are what `needs` says; the relay passes five ops.
+    #[test]
+    fn copied_feed_view_contract_matches_the_cell() {
+        use ce_wire::Api;
+        assert_eq!(<super::feed_view_api::FeedView as Api>::SCHEMA, 0xf226abb16f72c818);
+        let ops: Vec<(u32, &str)> = super::feed_view_api::FeedView::OPS.iter().map(|o| (o.id, o.name)).collect();
+        assert_eq!(ops, vec![(1, "HealthOp"), (2, "Page"), (3, "Topic"), (4, "Changes"), (5, "Mark"), (6, "Close"), (7, "Ui"), (8, "Compare")]);
+        for op in super::FEED_OPS {
+            assert!(ops.iter().any(|(_, n)| n == op), "{op}");
+        }
+        assert!(!super::FEED_OPS.contains(&"Ui") && !super::FEED_OPS.contains(&"Compare"));
+    }
     #[test]
     fn copied_cell_and_crm_contracts_match_the_live_cells() {
         assert_eq!(<super::cell_search_api::CellSearch as ce_wire::Api>::SCHEMA, 0x86ace76bede120b1);
