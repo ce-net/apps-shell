@@ -331,3 +331,40 @@ fn the_notes_strip_is_for_writers_only() {
     assert_eq!(g, s(&["arch.map:see", "arch.notes:read", "arch.notes:write"]));
     assert!(ARCH_FACES.contains(&"/core/") && ARCH_FACES.contains(&"/architecture/"));
 }
+
+/// A tmux row opens live: conv.term is served only to a viewer holding `term.session:read`; the relay passes five ops
+/// (typing and Interrupt need `term.session:write`); a viewer's session limits ride in their grant to the cell; the
+/// request is checked before any call; the module holds no fetch, storage, cookie, URL or innerHTML.
+#[test]
+fn a_tmux_row_opens_live_through_term_session_as_the_viewer() {
+    assert_eq!(view_needs("v/conv-term.js"), Some("term.session:read"));
+    assert_eq!((term_need("Watch"), term_need("Keys"), term_need("Interrupt")), (Some("term.session:read"), Some("term.session:write"), Some("term.session:write")));
+    for op in ["Open", "OpenWith", "Close", "Freeze", "Thaw", "Resize", "Expect", "Attach", "Node"] {
+        assert_eq!(term_need(op), None, "{op} is not passed");
+    }
+    assert!(GRANT.contains(&"wire.ws-door:mint-for:term.session") && DATA_CELLS.contains(&"term.session"));
+    assert!(!GRANT.iter().any(|g| g.starts_with("term.session:")), "the shell holds no term.session right of its own");
+    // read only: Keys is refused before a grant is minted; the session limit is carried, a wildcard never
+    let viewer = s(&["ai.session:list", "term.session:read", "term.session:where:session=proof-*"]);
+    assert_eq!(for_cell(&viewer, "term.session", "term.session:write"), None);
+    assert_eq!(for_cell(&viewer, "term.session", "term.session:read"), Some(s(&["term.session:read", "term.session:where:session=proof-*"])));
+    assert_eq!(viewer_grant(&s(&["term.session:read", "term.session:*"])), s(&["term.session:read"]), "a wildcard is never minted");
+    let ok = TermReq { node: "foreman-ops-1".into(), pane: "lane-a:0.0".into(), text: "ls -la".into(), keys: s(&["Enter", "C-c"]), ..Default::default() };
+    assert!(ok.check("Keys").is_ok());
+    for bad in [
+        TermReq { node: "".into(), pane: "%1".into(), ..Default::default() },
+        TermReq { node: "a b".into(), pane: "%1".into(), ..Default::default() },
+        TermReq { node: "n".into(), pane: "-t".into(), ..Default::default() },
+        TermReq { node: "n".into(), pane: "".into(), ..Default::default() },
+        TermReq { node: "n".into(), pane: "%1".into(), keys: s(&["Enter; rm"]), ..Default::default() },
+        TermReq { node: "n".into(), pane: "%1".into(), text: "x".repeat(4097), ..Default::default() },
+    ] {
+        assert!(bad.check("Keys").is_err(), "{bad:?}");
+    }
+    assert!(TermReq { node: "n".into(), ..Default::default() }.check("List").is_ok(), "List needs no pane");
+    assert!(serde_json::from_str::<TermReq>(r#"{"node":"n","pane":"%1","argv":["sh"]}"#).is_err(), "unknown fields are refused");
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site/v/conv-term.js")).unwrap();
+    for bad in ["fetch(", "localStorage", "document.cookie", "window.open", "location.href", "innerHTML", "http://", "https://"] {
+        assert!(!src.contains(bad), "conv-term.js holds {bad}");
+    }
+}

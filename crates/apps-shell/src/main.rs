@@ -2039,6 +2039,102 @@ async fn conv_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -
     }
 }
 
+/// `POST /api/cell/term.session/<Op>` on the Conversations face: a tmux row opened live, on the node that holds the
+/// pane (`term.session#<node>`), with a grant wire.ws-door minted for the viewer's own `term.session:*` rights (their
+/// `term.session:where:session=` limits ride along), so term.session's gate and scope decide on that node. TERM_OPS
+/// only; `Watch` long-polls the cell's Attach stream: the first screen whose hash is not `since`, or `same` after 20 s.
+async fn term_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -> (&'static str, Vec<u8>) {
+    use apps_shell::term_session_api::*;
+    use apps_shell::{term_need, TermReq};
+    let err = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+    let Some(need) = term_need(op) else { return err("404 Not Found", "no such op".into()) };
+    let req: TermReq = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(x) => return err("400 Bad Request", format!("body: {x}")),
+    };
+    if let Err(e) = req.check(op) {
+        return err("400 Bad Request", e);
+    }
+    let Some(mut ab) = for_cell(abilities, "term.session", need) else { return err("403 Forbidden", "refused".into()) };
+    // the grant is good on the row's node only: a dial that falls back to another node's term.session is refused there
+    ab.push(format!("term.session:where:node={}", req.node));
+    let g = match viewer(person, &ab).await {
+        Ok(g) => g,
+        Err(e) if e == "refused" => return err("403 Forbidden", "refused".into()),
+        Err(e) => return err("503 Service Unavailable", e),
+    };
+    // a hello signed for the instance name, fresh for every door the dial tries
+    let (gk, node) = (g.clone(), req.node.clone());
+    let mint = move || ce_gate::proof_as::<TermSession>(&gk.key, &gk.chain, &node);
+    let mut c = match tokio::time::timeout(Duration::from_secs(4), ce_wire::Client::<TermSession>::by_instance_minted(&req.node, mint)).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(ce_wire::WireError::Refused(_))) => return err("403 Forbidden", "refused".into()),
+        Ok(Err(e)) => return err("503 Service Unavailable", format!("term.session on {}: {e}", req.node)),
+        Err(_) => return err("503 Service Unavailable", format!("term.session on {}: no answer in 4 s", req.node)),
+    };
+    c.deadline = Duration::from_secs(10);
+    // a dial with no such instance falls back to any term.session: never show or type into another node's panes
+    match c.call::<Node>(&()).await {
+        Ok(at) if at == req.node => {}
+        Ok(_) | Err(ce_wire::WireError::Refused(ce_wire::Refusal::UnknownOp(_))) => return err("503 Service Unavailable", format!("term.session is not running on {}", req.node)),
+        Err(ce_wire::WireError::Refused(ce_wire::Refusal::Remote(m))) => return err("502 Bad Gateway", m),
+        Err(ce_wire::WireError::Refused(_)) => return err("403 Forbidden", "refused".into()),
+        Err(e) => return err("503 Service Unavailable", format!("term.session on {}: {e}", req.node)),
+    }
+    fn out<T: serde::Serialize>(r: Result<T, ce_wire::WireError>) -> (&'static str, Vec<u8>) {
+        let e = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+        match r {
+            Ok(v) => ("200 OK", json(&v)),
+            // the cell's own answer: a pane outside the viewer's sessions answers like one that does not exist
+            Err(ce_wire::WireError::Refused(ce_wire::Refusal::Remote(m))) if m.contains("can't find") || m.contains("outside this grant") => e("404 Not Found", "no such pane".into()),
+            Err(ce_wire::WireError::Refused(ce_wire::Refusal::Remote(m))) if m.contains("Frozen") => e("409 Conflict", m),
+            Err(ce_wire::WireError::Refused(ce_wire::Refusal::Remote(m))) => e("502 Bad Gateway", m),
+            // the gate: the viewer does not hold the op's right there
+            Err(ce_wire::WireError::Refused(_)) => e("403 Forbidden", "refused".into()),
+            Err(x) => e("502 Bad Gateway", x.to_string()),
+        }
+    }
+    let hash = |t: &str| -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(t.as_bytes()).iter().take(8).map(|x| format!("{x:02x}")).collect()
+    };
+    match op {
+        "List" => out(c.call::<List>(&()).await),
+        "Read" => out(c.call::<Read>(&ReadReq { pane: req.pane, lines: 0 }).await.map(|s| serde_json::json!({ "width": s.width, "height": s.height, "text": s.text, "hash": hash(&s.text) }))),
+        "Keys" => {
+            let mut r = Ok(());
+            if !req.text.is_empty() {
+                r = c.call::<Keys>(&SendReq { pane: req.pane.clone(), keys: vec![req.text.clone()], literal: true, enter: false }).await;
+            }
+            if r.is_ok() && (!req.keys.is_empty() || req.enter) {
+                r = c.call::<Keys>(&SendReq { pane: req.pane.clone(), keys: req.keys.clone(), literal: false, enter: req.enter }).await;
+            }
+            out(r.map(|_| serde_json::json!({ "ok": true })))
+        }
+        "Interrupt" => out(c.call::<Interrupt>(&PaneReq { pane: req.pane }).await.map(|_| serde_json::json!({ "ok": true }))),
+        _ => {
+            let mut st = match c.subscribe::<Attach>(&AttachReq { pane: req.pane }) {
+                Ok(st) => st,
+                Err(e) => return out::<()>(Err(e)),
+            };
+            let until = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                match tokio::time::timeout_at(until, st.next()).await {
+                    Ok(Some(Ok(f))) => {
+                        let h = hash(&f.text);
+                        if h != req.since {
+                            return out::<serde_json::Value>(Ok(serde_json::json!({ "width": f.width, "height": f.height, "text": f.text, "hash": h })));
+                        }
+                    }
+                    Ok(Some(Err(e))) => return out::<()>(Err(e)),
+                    Ok(None) => return err("502 Bad Gateway", "the stream ended".into()),
+                    Err(_) => return out::<serde_json::Value>(Ok(serde_json::json!({ "same": true, "hash": req.since }))),
+                }
+            }
+        }
+    }
+}
+
 /// The ops the usage strip's relay passes (the `conv.usage` types in strip.rs; `ai.usage` Read, Conversation, Events
 /// underneath), and nothing else.
 const USAGE_OPS: &[&str] = &["StripOp", "CostsOp", "WaitOp"];
@@ -2143,7 +2239,7 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
     let route = path.split(['?', '#']).next().unwrap_or("/").to_string();
     // the one POST: the Feed data relay (JSON in, JSON out; a cross-site form cannot send application/json)
     // and the Conversations relay (ai.session List, Get, Read), on the face of /conversations/ only
-    let relay = method == "POST" && (route.starts_with("/api/cell/feed.view/") || (route.starts_with("/api/cell/ai.session/") && f.route == "/conversations/") || (route.starts_with("/api/cell/conv.usage/") && f.route == "/conversations/"));
+    let relay = method == "POST" && (route.starts_with("/api/cell/feed.view/") || (route.starts_with("/api/cell/ai.session/") && f.route == "/conversations/") || (route.starts_with("/api/cell/conv.usage/") && f.route == "/conversations/") || (route.starts_with("/api/cell/term.session/") && f.route == "/conversations/"));
     // the Architecture relays (arch.map, and arch.notes for the notes strip), on the Core and Architecture faces
     let arch_face = ARCH_FACES.contains(&f.route.as_str());
     let arch_relay_req = method == "POST" && route.starts_with("/api/cell/arch.map/") && arch_face;
@@ -2200,7 +2296,7 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         let live = f.live.read().await.clone();
         let mine = tabs_for(&ab, &live, ui_chain::now_ms());
         let (cell, op) = route.strip_prefix("/api/cell/").and_then(|r| r.split_once('/')).unwrap_or(("", ""));
-        let tab = if cell == "ai.session" || cell == "conv.usage" { "/conversations/" } else { "/feed/" };
+        let tab = if cell == "ai.session" || cell == "conv.usage" || cell == "term.session" { "/conversations/" } else { "/feed/" };
         if !mine.iter().any(|t| t.route == tab) {
             return reply(&mut s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await;
         }
@@ -2223,6 +2319,7 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         let (st, out) = match cell {
             "ai.session" => conv_relay(&person, &ab, op, &body).await,
             "conv.usage" => usage_relay(&person, &ab, op, &body).await,
+            "term.session" => term_relay(&person, &ab, op, &body).await,
             _ => feed_relay(&person, &ab, op, &body).await,
         };
         return reply(&mut s, st, "application/json", &out, false).await;
@@ -2391,6 +2488,25 @@ mod contracts {
             assert!(ops.contains(op), "{op}");
         }
         assert_eq!(super::CONV_OPS, &["List", "Get", "Read"], "slice 2 is read only: no Open, Send, Fork, Import or Config op");
+    }
+
+    /// term.session major 1 as repo:term-session crates/term-session-api has it (its own test pins the same
+    /// hash): the terminal relay passes List, Read, Keys, Interrupt and Watch (over Attach) only, never Open, Close,
+    /// Freeze, Thaw, Resize or OpenWith.
+    #[test]
+    fn copied_term_session_contract_matches_the_cell() {
+        use ce_wire::Api;
+        use apps_shell::term_session_api::TermSession;
+        assert_eq!(format!("{:016x}", <TermSession as Api>::SCHEMA), "7c4d50fa566fd6e8");
+        let ops: Vec<&str> = TermSession::OPS.iter().map(|o| o.name).collect();
+        for (op, _) in apps_shell::TERM_OPS.iter().filter(|(o, _)| *o != "Watch") {
+            assert!(ops.contains(op), "{op}");
+        }
+        let names: Vec<&str> = apps_shell::TERM_OPS.iter().map(|(o, _)| *o).collect();
+        assert_eq!(names, ["List", "Read", "Watch", "Keys", "Interrupt"]);
+        for (op, need) in apps_shell::TERM_OPS {
+            assert_eq!(*need, if matches!(*op, "Keys" | "Interrupt") { "term.session:write" } else { "term.session:read" });
+        }
     }
 
     #[test]

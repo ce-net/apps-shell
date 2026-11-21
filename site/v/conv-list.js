@@ -1,6 +1,8 @@
 // conv.list (UI cell, left column of the Conversations tab): ai.session List as the viewer. Filters by kind (server
 // side), Live (state not Closed), node and words; counts per source and per node are the cell's own totals (List with
-// limit 1), so they match the rows ai.store holds for this viewer, not the page shown.
+// limit 1), so they match the rows ai.store holds for this viewer, not the page shown. Every tmux pane the viewer may
+// see is listed live too: term.session List on each node (as the viewer; its session scope decides), merged with the
+// imported tmux rows, so a pane opened a minute ago is there before the next import.
 export const view = { cell: 'ai.session', name: 'conv.list', speaks: [1], kit: 1 };
 
 // the cost line `tokens . $cost . time` of a conversation comes from the usage strip's module (conv.usage, ai.usage
@@ -34,11 +36,26 @@ export function ago(ms) {
 }
 
 function group(c) {
+  if (c.provider === 'term.session') return 'Live terminals';
   if (isLive(c)) return 'Live';
   const d = new Date(c.last_ms), now = new Date();
   const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diff = (day(now) - day(d)) / 86400000;
   return diff < 1 ? 'Today' : diff < 2 ? 'Yesterday' : 'Earlier';
+}
+
+// the tmux panes term.session lists on these nodes (each node's own instance, as the viewer), as rows; a node without
+// term.session or a viewer without term.session:read gives none
+const termRow = (node, p) => ({ id: 'term:' + node + ':' + p.session + ':' + p.window + '.' + p.index, title: p.session + ' · ' + p.cmd, provider: 'term.session', account: '', model: '',
+  node, state: 'Running', kind: p.cmd === 'claude' ? 'lane' : 'terminal', source: 'tmux', cwd: p.cwd, turns: 0, last_ms: Date.now(),
+  native: { provider: 'term.session', node, id: 'tmux:' + p.session + ':' + p.window + '.' + p.index } });
+// the nodes where lanes run in tmux, asked even before a row names them
+const LANE_NODES = ['foreman-ops-1', 'leif-desk'];
+export async function livePanes(host, nodes) {
+  const term = host.other && host.other['term.session'];
+  if (!term) return [];
+  const per = await Promise.all(nodes.map(n => term.call('List', { node: n }).then(ps => (ps || []).map(p => termRow(n, p))).catch(() => [])));
+  return per.flat();
 }
 
 export function mountList(root, host, { onOpen }) {
@@ -85,6 +102,16 @@ export function mountList(root, host, { onOpen }) {
     }
     if (my !== seq || stopped) return;
     let list = r.conversations || [];
+    const ns0 = [...new Set([...LANE_NODES, ...knownNodes, ...list.map(c => c.node)])].filter(Boolean).sort();
+    if (!['worker', 'session', 'chat'].includes(kind)) {
+      const panes = await livePanes(host, node ? [node] : ns0);
+      if (my !== seq || stopped) return;
+      const have = new Set(list.filter(c => c.source === 'tmux' && c.native).map(c => c.node + ' ' + c.native.id));
+      const ql = (q || '').toLowerCase();
+      const add = panes.filter(c => !have.has(c.node + ' ' + c.native.id) && (!kind || kind === 'live' || c.kind === kind) && (!ql || (c.title + ' ' + c.cwd).toLowerCase().includes(ql)));
+      list = [...add, ...list];
+      r = { ...r, total: r.total + add.length };
+    }
     if (kind === 'live') list = list.filter(isLive);
     const ns = [...new Set((r.conversations || []).map(c => c.node))].sort();
     if (!node && !q && !kind) { knownNodes = ns; drawNodes(); }

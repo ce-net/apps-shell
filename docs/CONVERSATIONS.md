@@ -44,5 +44,35 @@ Chromium at 390 and 1280 px. Keys and grant destroyed after.
 - Tests: `cargo test` here (tabs 19 incl. the Conversations rules, contract hash `0xb35024aa61e4992c` pinned, the
   relay passes List, Get and Read only), ce-net-net 10.
 
-Not in this slice: talking (Send, Fork, Interrupt from the UI, conv.compose and conv.new are slice 3), live Events in
+Not in this slice: talking to headless sessions (Send, Fork, Interrupt from the UI, conv.compose and conv.new are slice 3), live Events in
 the view (it refreshes the list every 30 s), the Details column of the sketch.
+
+## tmux lanes live (2026-11-21, Leif ~09:00: "i must always be able to directly interact with all ai especially when its tmux")
+
+A tmux row no longer shows "metadata only". It opens live through `term.session` (repo:term-session, schema
+`7c4d50fa566fd6e8`) on the node that holds the pane (`term.session#<node>`), and the cell's answer to `Node` is
+checked, so a dial that falls back to another node's cell is refused.
+- conv.term (site/v/conv-term.js, served only to a viewer who holds `term.session:read`) shows the screen as it
+  changes. `Watch` long-polls the cell's Attach stream and returns the first screen whose hash differs from the one
+  the page shows. You can type a line (Keys: text, then Enter) and use the key row (Enter, Up, Down, Tab, Esc,
+  Backspace, C-d) and Interrupt (op 12, Ctrl-C).
+- conv.list (the entrypoint work's addition, kept): every pane that term.session List returns on foreman-ops-1,
+  leif-desk and every node a row names is listed under "Live terminals". A pane opened after the last import shows up
+  there too.
+- Relay `POST /api/cell/term.session/<List|Read|Watch|Keys|Interrupt>` on /conversations/ only, as the viewer. The
+  grant is minted by wire.ws-door from the viewer's own `term.session:*` rights (`read` to watch, `write` to type and
+  interrupt). A `term.session:where:session=<name>` (or `name*`) ability rides along, and term.session itself filters
+  List and answers 404 for any pane outside it. The body is typed (`TermReq`, unknown fields refused, at most 4096
+  characters of text and 16 tmux key names). Open, Close, Freeze, Resize and OpenWith are never relayed.
+
+Proof (foreman-ops-1, proof copies `c89c-*` units, test persons only, keys and grant destroyed after;
+docs/term-proof/): throwaway pane `c89c-proof`.
+- t-term-owner (read+write, sessions `c89c-proof*`), 1280 and 390 px: the pane opens, a loop typed in the tab prints
+  `tick-N` lines that appear live (the screen differs 2 s apart), Interrupt stops it (`^C`, the screen stays still
+  after). No horizontal scroll.
+- t-term-watcher (read only): sees the pane live. Typing is refused (403) and the input row says why. Nothing reaches
+  the pane.
+- the owner opening the leif-cenet row (outside their sessions): "not there any more, or not open to you", no screen.
+- t-term-rowonly (ai.session only): rows, no panes, /v/conv-term.js 404. t-term-stranger: no tab, module 404.
+- curl: debian and leif-desk answer 503 "term.session is not running on <node>" (it is not installed there yet).
+  Before the Node check, they showed ops-1's panes.

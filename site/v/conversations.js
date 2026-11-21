@@ -5,8 +5,9 @@
 import { mountList } from './conv-list.js';
 import { mountThread } from './conv-thread.js';
 
-// `also`: the other cell this layout talks to through the shell's relay (the usage strip, conv.usage)
-export const view = { cell: 'ai.session', also: ['conv.usage'], name: 'Conversations', speaks: [1], kit: 1 };
+// `also`: the other cells this layout talks to through the shell's relay (the usage strip conv.usage; term.session for
+// a tmux row opened live)
+export const view = { cell: 'ai.session', also: ['conv.usage', 'term.session'], name: 'Conversations', speaks: [1], kit: 1 };
 
 const CSS = `
 .cv-usage{background:var(--bg)}

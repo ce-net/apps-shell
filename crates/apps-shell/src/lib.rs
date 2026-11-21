@@ -13,6 +13,7 @@
 
 pub mod ai_usage_api;
 pub mod decision_card_api;
+pub mod term_session_api;
 pub mod strip;
 
 use apps_shell_api::TabRow;
@@ -58,6 +59,8 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint-for:arch.notes",
     // the Approvals tab's cards: decision.card BoardOp as the viewer (their owner caveat kept)
     "wire.ws-door:mint-for:decision.card",
+    // a tmux row of the Conversations tab, live: term.session List, Read, Attach, Keys, Interrupt, as the viewer
+    "wire.ws-door:mint-for:term.session",
     "approve.inbox:health",
     "site.cellmap:health",
     "foreman.shell:health",
@@ -76,7 +79,7 @@ pub const GRANT: &[&str] = &[
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
 pub const DATA_CELLS: &[&str] = &[
     "approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls",
-    "open.with", "home.shell", "feed.view", "ai.session", "ai.usage", "arch.map", "arch.notes", "decision.card",
+    "open.with", "home.shell", "feed.view", "ai.session", "ai.usage", "arch.map", "arch.notes", "decision.card", "term.session",
 ];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
@@ -89,6 +92,64 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
     v.sort();
     v.dedup();
     v
+}
+
+/// The ops the Conversations tab's terminal relay passes to term.session, each with the right the viewer must hold;
+/// nothing else (no Open, Close, Freeze or Resize from a page). `Watch` is the long poll over the cell's Attach stream.
+pub const TERM_OPS: &[(&str, &str)] = &[
+    ("List", "term.session:read"),
+    ("Read", "term.session:read"),
+    ("Watch", "term.session:read"),
+    ("Keys", "term.session:write"),
+    ("Interrupt", "term.session:write"),
+];
+
+/// The right `op` of the terminal relay needs, or None for an op it does not pass.
+pub fn term_need(op: &str) -> Option<&'static str> {
+    TERM_OPS.iter().find(|(o, _)| *o == op).map(|(_, n)| *n)
+}
+
+/// One request of the terminal relay (JSON in): the node that holds the pane (its `term.session#<node>`), the pane
+/// (`%3` or `session:window.pane`, as a tmux row's native id carries it), and for Keys the text and/or key names.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TermReq {
+    pub node: String,
+    #[serde(default)]
+    pub pane: String,
+    /// Keys: typed as-is (literal)
+    #[serde(default)]
+    pub text: String,
+    /// Keys: tmux key names after the text (Enter, Up, BSpace, Tab, Escape, C-d ...)
+    #[serde(default)]
+    pub keys: Vec<String>,
+    /// Keys: Enter after everything
+    #[serde(default)]
+    pub enter: bool,
+    /// Watch: the hash of the screen the page shows; the answer waits until the screen differs (or 20 s)
+    #[serde(default)]
+    pub since: String,
+}
+
+impl TermReq {
+    /// Checked before any call: a node name, a pane target, at most 4096 characters of text and 16 plain key names.
+    pub fn check(&self, op: &str) -> Result<(), String> {
+        let node_ok = !self.node.is_empty() && self.node.len() <= 64 && self.node.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+        if !node_ok {
+            return Err("node: a node name".into());
+        }
+        let pane_ok = self.pane.len() < 128 && !self.pane.starts_with('-') && self.pane.chars().all(|c| c.is_alphanumeric() || "%@$:._-".contains(c));
+        if !pane_ok || (op != "List" && self.pane.is_empty()) {
+            return Err("pane: a pane id or session:window.pane".into());
+        }
+        if self.text.chars().count() > 4096 || self.keys.len() > 16 {
+            return Err("at most 4096 characters and 16 keys".into());
+        }
+        if let Some(k) = self.keys.iter().find(|k| k.is_empty() || k.len() > 12 || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+            return Err(format!("key {k:?}: a tmux key name"));
+        }
+        Ok(())
+    }
 }
 
 /// Leif's abilities when the people file does not name him.
@@ -380,6 +441,8 @@ pub fn view_needs(name: &str) -> Option<&'static str> {
         "v/conv-thread.js" => "ai.session:read",
         // the usage strip above them (conv.usage: ai.usage Read, Conversation, Events)
         "v/conv-usage.js" => "ai.usage:read",
+        // a tmux row opened live (term.session on the pane's node)
+        "v/conv-term.js" => "term.session:read",
         _ => return None,
     })
 }

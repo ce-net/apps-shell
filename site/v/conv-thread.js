@@ -1,6 +1,7 @@
 // conv.thread (UI cell, centre of the Conversations tab): one conversation, read only. ai.session Get for its row,
 // then Read in pages of 50 turns; an imported Claude Code session is read in place on the node that holds it (nothing
-// is copied). Tool calls fold to one line each, thinking is left out, tmux panes and workers show their row only.
+// is copied). Tool calls fold to one line each, thinking is left out, workers show their row only. A tmux pane opens
+// live (conv.term: term.session on its node: the screen as it changes, typing, keys, Interrupt) for a viewer who may.
 import { ago, stateName, showCost, usageMod } from './conv-list.js';
 
 export const view = { cell: 'ai.session', name: 'conv.thread', speaks: [1], kit: 1 };
@@ -69,14 +70,24 @@ export function mountThread(root, host, conv, { onBack }) {
 
   // the cost line of the header (tokens . $ . time; tooltip model, account, device) from ai.usage, when the viewer may
   const cost = () => { const sp = head.querySelector('.cv-cost'); if (sp) showCost(sp); };
-  let offCosts = () => {};
+  let offCosts = () => {}, offTerm = () => {};
+  // a tmux row: the pane itself, live, when the viewer holds term.session:read (else its module is not served)
+  async function openTerm(c) {
+    const term = host.other && host.other['term.session'];
+    const m = term && await import('./conv-term.js').catch(() => null);
+    const pane = m && m.paneOf(c);
+    if (!m || !pane || !c.node || stopped) return false;
+    offTerm = m.mountTerm(turns, term, { node: c.node, pane });
+    return true;
+  }
   usageMod().then(m => { if (m && !stopped) offCosts = m.onCosts(cost); });
   (async () => {
     drawHead(conv); cost();
-    try { const c = await host.call('Get', { conversation: conv.id }); if (!stopped) { conv = c; drawHead(c); cost(); } } catch (_) {}
+    if (conv.provider !== 'term.session') try { const c = await host.call('Get', { conversation: conv.id }); if (!stopped) { conv = c; drawHead(c); cost(); } } catch (_) {}
+    if (conv.source === 'tmux' && await openTerm(conv)) return;
     page();
   })();
-  return () => { stopped = true; offCosts(); };
+  return () => { stopped = true; offCosts(); offTerm(); };
 }
 
 export function mount(root, host) {
