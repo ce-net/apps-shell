@@ -11,6 +11,9 @@
 //! With no file, `leif` holds [`ROOT`] and nobody else holds anything.
 #![forbid(unsafe_code)]
 
+pub mod ai_usage_api;
+pub mod strip;
+
 use apps_shell_api::TabRow;
 use ce_net_net::{Tab, CE_NET};
 use serde::Deserialize;
@@ -46,6 +49,8 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint-for:home.shell",
     "wire.ws-door:mint-for:feed.view",
     "wire.ws-door:mint-for:ai.session",
+    // the usage strip of the Conversations tab: ai.usage Read, Conversation and Events, as the viewer
+    "wire.ws-door:mint-for:ai.usage",
     // the Architecture view under Core (/core/?view=architecture): arch.map's Ui and its internal reads, each as the viewer
     "wire.ws-door:mint-for:arch.map",
     // the notes strip of the Architecture view: arch.notes Put, List, Close, as the viewer with their author caveat
@@ -67,7 +72,7 @@ pub const GRANT: &[&str] = &[
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
 pub const DATA_CELLS: &[&str] = &[
     "approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls",
-    "open.with", "home.shell", "feed.view", "ai.session", "arch.map", "arch.notes",
+    "open.with", "home.shell", "feed.view", "ai.session", "ai.usage", "arch.map", "arch.notes",
 ];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
@@ -84,7 +89,7 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
 
 /// Leif's abilities when the people file does not name him.
 pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs", "search.hybrid:find", "search.mesh:find", "ref.resolve:read", "ref.pin:read",
-    "cell.search:search", "crm.people:read", "crm.promises:read", "crm.calls:read", "open.with:use", "home.shell:open", "home.shell:links", "ai.session:list", "ai.session:read"];
+    "cell.search:search", "crm.people:read", "crm.promises:read", "crm.calls:read", "open.with:use", "home.shell:open", "home.shell:links", "ai.session:list", "ai.session:read", "ai.usage:read"];
 
 /// The Search tab's private reads: search.hybrid opens a private label only for an ability naming it exactly (its
 /// lib.rs PRIVATE), and every repo by the exact `read:repos`. A viewer's search carries only the ones they hold.
@@ -369,6 +374,8 @@ pub fn view_needs(name: &str) -> Option<&'static str> {
         // the two UI cells of the Conversations tab (v/conversations.js lays them out)
         "v/conv-list.js" => "ai.session:list",
         "v/conv-thread.js" => "ai.session:read",
+        // the usage strip above them (conv.usage: ai.usage Read, Conversation, Events)
+        "v/conv-usage.js" => "ai.usage:read",
         _ => return None,
     })
 }

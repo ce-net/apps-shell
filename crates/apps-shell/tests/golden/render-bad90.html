@@ -1,0 +1,80 @@
+<div class="us-acct" data-state="bad" data-account="acct2" role="group" aria-label="Account acct2">
+  <div class="us-h">
+    <span class="us-label">acct2</span>
+    <span class="us-plan">Claude Max 5x</span>
+  </div>
+  <div class="us-g" data-state="off" data-stale="false" data-gauge="5h">
+    <span class="us-n">5h</span>
+    <progress class="us-bar" max="100" value="0" aria-label="5h no 5-hour limit on this plan"></progress>
+    <span class="us-v"></span>
+    <span class="us-note">no 5-hour limit on this plan</span>
+  </div>
+  <div class="us-g" data-state="bad" data-stale="false" data-gauge="7d">
+    <span class="us-n">7d</span>
+    <progress class="us-bar" max="100" value="92" aria-label="7d 92%"></progress>
+    <span class="us-v">92%</span>
+    <span class="us-note">resets Thu 09:00 UTC</span>
+  </div>
+  <div class="us-chips">
+    <span class="us-chip" data-state="normal" title="Fable week: 7%, resets Thu 09:00 UTC">
+      <b>Fable</b>
+      <span>7%</span>
+    </span>
+  </div>
+</div>
+<div class="us-acct" data-state="ok" data-account="gateway-claude-foreman-ops-1" role="group" aria-label="Account gateway-claude-foreman-ops-1">
+  <div class="us-h">
+    <span class="us-label">gateway-claude-foreman-ops-1</span>
+  </div>
+  <div class="us-g" data-state="normal" data-stale="false" data-gauge="day">
+    <span class="us-n">day</span>
+    <progress class="us-bar" max="100" value="2" aria-label="day 2%"></progress>
+    <span class="us-v">2%</span>
+    <span class="us-note">resets 00:00 UTC</span>
+  </div>
+</div>
+<div class="us-acct" data-state="ok" data-account="cenet" role="group" aria-label="Account cenet">
+  <div class="us-h">
+    <span class="us-label">cenet</span>
+    <span class="us-stale" data-stale-badge="true">stale, last sample 7 d ago</span>
+  </div>
+  <div class="us-g" data-state="normal" data-stale="true" data-gauge="7d">
+    <span class="us-n">7d</span>
+    <progress class="us-bar" max="100" value="39" aria-label="7d 39%"></progress>
+    <span class="us-v">39%</span>
+    <span class="us-note">reset passed Wed 04:00 UTC, reading is old</span>
+  </div>
+</div>
+<div class="us-acct" data-state="lapsed" data-account="ambience" role="group" aria-label="Account ambience">
+  <div class="us-h">
+    <span class="us-label">ambience</span>
+    <span class="us-plan">Claude Max 20x</span>
+    <span class="us-lock" data-lock="lapsed">
+      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+        <rect x="2" y="5.5" width="8" height="5.5"></rect>
+        <path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"></path>
+      </svg>
+      payment past due
+    </span>
+    <span class="us-stale" data-stale-badge="true">stale, last sample 7 d ago</span>
+  </div>
+</div>
+<div class="us-keys" aria-label="API keys">
+  <div class="us-h">
+    <span class="us-label">API keys</span>
+    <span class="us-plan" title="every key, today">today $0.09</span>
+  </div>
+  <div class="us-key" data-key="opencode-livekit" title="livekit 202611, 1.4M tok in, 140k tok out, counted here. OpenCode database, priced with config/prices.tom">
+    <b>opencode-livekit</b>
+    <span>$2.78 month</span>
+    <i class="us-stale">stale</i>
+  </div>
+</div>
+<div class="us-dev" data-device="foreman-ops-1" title="linux aarch64 server, online. CLIs: claude, gemini, opencode">
+  <div class="us-h">
+    <span class="us-dot" data-on="true"></span>
+    <span class="us-label">foreman-ops-1</span>
+    <span class="us-plan">server, online</span>
+  </div>
+  <div class="us-sub">logged in: acct2</div>
+</div>

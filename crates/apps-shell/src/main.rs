@@ -2018,6 +2018,87 @@ async fn conv_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -
     }
 }
 
+/// The ops the usage strip's relay passes (the `conv.usage` types in strip.rs; `ai.usage` Read, Conversation, Events
+/// underneath), and nothing else.
+const USAGE_OPS: &[&str] = &["StripOp", "CostsOp", "WaitOp"];
+
+/// Which device this shell answers on (the strip's device chip when the page names none).
+fn this_device() -> Option<String> {
+    let h = std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty()).or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|h| h.trim().to_string()));
+    h.filter(|h| !h.is_empty())
+}
+
+fn epoch_s() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// `POST /api/cell/conv.usage/<StripOp|CostsOp|WaitOp>` on the Conversations face: the strip's data as the viewer.
+/// Calls `ai.usage` with a grant wire.ws-door minted for the viewer's own `ai.usage:read` (Leif's home tenant: the
+/// request names no tenant, the cell answers its own, so a viewer cannot ask for another). The page is given the typed
+/// [`strip::Strip`] and never sees a Report.
+async fn usage_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -> (&'static str, Vec<u8>) {
+    use ai_usage_api::*;
+    let err = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+    if !USAGE_OPS.contains(&op) {
+        return err("404 Not Found", "no such op".into());
+    }
+    let Some(ab) = for_cell(abilities, "ai.usage", "ai.usage:read") else { return err("403 Forbidden", "refused".into()) };
+    let mut c = match client::<AiUsage>(person, &ab).await {
+        Ok(c) => c,
+        Err(e) if e == "refused" => return err("403 Forbidden", "refused".into()),
+        Err(e) => return err("503 Service Unavailable", e),
+    };
+    c.deadline = Duration::from_secs(15);
+    let wire = |e: ce_wire::WireError| match e {
+        ce_wire::WireError::Refused(_) => err("403 Forbidden", "refused".into()),
+        x => err("503 Service Unavailable", x.to_string()),
+    };
+    let usage = |e: UsageError| err("502 Bad Gateway", format!("{e:?}"));
+    match op {
+        "StripOp" => {
+            let Ok(req) = serde_json::from_slice::<strip::StripReq>(body) else { return err("400 Bad Request", "body".into()) };
+            let me = req.device.clone().or_else(this_device);
+            match c.call::<Read>(&ReadReq { tenant: String::new(), scope: "all".into() }).await {
+                Ok(Ok(r)) => ("200 OK", json(&strip::build(&r, epoch_s(), me.as_deref()))),
+                Ok(Err(e)) => usage(e),
+                Err(e) => wire(e),
+            }
+        }
+        "CostsOp" => {
+            let Ok(req) = serde_json::from_slice::<strip::CostsReq>(body) else { return err("400 Bad Request", "body".into()) };
+            let mut rows = Vec::new();
+            for id in req.ids.iter().take(120) {
+                if id.is_empty() || id.len() > 160 || id.chars().any(|ch| ch.is_control()) {
+                    continue;
+                }
+                match c.call::<Conversation>(&ConvReq { id: id.clone() }).await {
+                    Ok(Ok(row)) => rows.push(strip::cost(id, row.as_ref())),
+                    Ok(Err(e)) => return usage(e),
+                    Err(e) => return wire(e),
+                }
+            }
+            ("200 OK", json(&strip::Costs { rows }))
+        }
+        _ => {
+            let Ok(req) = serde_json::from_slice::<strip::WaitReq>(body) else { return err("400 Bad Request", "body".into()) };
+            // the Events stream, held open for at most wait_ms: one item means "read again"
+            // `since` is required: None would replay the last 20 events at once
+            let Some(since) = req.since.clone().filter(|s| strip::parse_time(s).is_some()) else { return err("400 Bad Request", "since: an RFC 3339 time".into()) };
+            let mut sub = match c.subscribe::<Events>(&EventsReq { tenant: String::new(), since: Some(since) }) {
+                Ok(s) => s,
+                Err(e) => return wire(e),
+            };
+            let wait = Duration::from_millis(u64::from(req.wait_ms).clamp(1000, 30_000));
+            let waited = match tokio::time::timeout(wait, sub.next()).await {
+                Ok(Some(Ok(row))) => strip::Waited { changed: true, at: Some(row.at) },
+                Ok(Some(Err(e))) => return wire(e),
+                _ => strip::Waited { changed: false, at: None },
+            };
+            ("200 OK", json(&waited))
+        }
+    }
+}
+
 async fn one(f: Arc<Face>, mut s: TcpStream) {
     let mut buf = Vec::with_capacity(2048);
     loop {
@@ -2041,7 +2122,7 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
     let route = path.split(['?', '#']).next().unwrap_or("/").to_string();
     // the one POST: the Feed data relay (JSON in, JSON out; a cross-site form cannot send application/json)
     // and the Conversations relay (ai.session List, Get, Read), on the face of /conversations/ only
-    let relay = method == "POST" && (route.starts_with("/api/cell/feed.view/") || (route.starts_with("/api/cell/ai.session/") && f.route == "/conversations/"));
+    let relay = method == "POST" && (route.starts_with("/api/cell/feed.view/") || (route.starts_with("/api/cell/ai.session/") && f.route == "/conversations/") || (route.starts_with("/api/cell/conv.usage/") && f.route == "/conversations/"));
     // the Architecture relays (arch.map, and arch.notes for the notes strip), on the Core and Architecture faces
     let arch_face = ARCH_FACES.contains(&f.route.as_str());
     let arch_relay_req = method == "POST" && route.starts_with("/api/cell/arch.map/") && arch_face;
@@ -2098,7 +2179,7 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         let live = f.live.read().await.clone();
         let mine = tabs_for(&ab, &live, ui_chain::now_ms());
         let (cell, op) = route.strip_prefix("/api/cell/").and_then(|r| r.split_once('/')).unwrap_or(("", ""));
-        let tab = if cell == "ai.session" { "/conversations/" } else { "/feed/" };
+        let tab = if cell == "ai.session" || cell == "conv.usage" { "/conversations/" } else { "/feed/" };
         if !mine.iter().any(|t| t.route == tab) {
             return reply(&mut s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await;
         }
@@ -2118,7 +2199,11 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
             }
         }
         body.truncate(len);
-        let (st, out) = if cell == "ai.session" { conv_relay(&person, &ab, op, &body).await } else { feed_relay(&person, &ab, op, &body).await };
+        let (st, out) = match cell {
+            "ai.session" => conv_relay(&person, &ab, op, &body).await,
+            "conv.usage" => usage_relay(&person, &ab, op, &body).await,
+            _ => feed_relay(&person, &ab, op, &body).await,
+        };
         return reply(&mut s, st, "application/json", &out, false).await;
     }
     if let Some(sha) = route.strip_prefix("/_c/").and_then(|r| r.strip_suffix(".js")) {

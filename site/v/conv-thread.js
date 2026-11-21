@@ -1,7 +1,7 @@
 // conv.thread (UI cell, centre of the Conversations tab): one conversation, read only. ai.session Get for its row,
 // then Read in pages of 50 turns; an imported Claude Code session is read in place on the node that holds it (nothing
 // is copied). Tool calls fold to one line each, thinking is left out, tmux panes and workers show their row only.
-import { ago, stateName } from './conv-list.js';
+import { ago, stateName, showCost, usageMod } from './conv-list.js';
 
 export const view = { cell: 'ai.session', name: 'conv.thread', speaks: [1], kit: 1 };
 
@@ -35,6 +35,7 @@ export function mountThread(root, host, conv, { onBack }) {
     onBack ? h('button', { type: 'button', class: 'cv-btn cv-back', onclick: onBack }, 'Back') : '',
     h('h2', {}, c.title || c.id),
     h('div', { class: 'cv-meta' }, h('span', {}, c.provider), h('span', {}, c.account || ''), h('span', {}, c.node), h('span', {}, c.kind + ' · ' + c.source), h('span', {}, stateName(c.state)), h('span', {}, c.turns + ' msg'), h('span', {}, ago(c.last_ms))),
+    h('div', { class: 'cv-meta' }, h('span', { class: 'cv-cost', 'data-cost': c.id }, '')),
     c.cwd ? h('div', { class: 'cv-meta' }, h('span', {}, c.cwd)) : '',
     h('div', { class: 'cv-meta' }, h('span', {}, 'ai.session ' + c.id), c.native ? h('span', {}, 'native ' + c.native.id) : ''));
 
@@ -66,12 +67,16 @@ export function mountThread(root, host, conv, { onBack }) {
     if (next !== null) turns.append(more);
   }
 
+  // the cost line of the header (tokens . $ . time; tooltip model, account, device) from ai.usage, when the viewer may
+  const cost = () => { const sp = head.querySelector('.cv-cost'); if (sp) showCost(sp); };
+  let offCosts = () => {};
+  usageMod().then(m => { if (m && !stopped) offCosts = m.onCosts(cost); });
   (async () => {
-    drawHead(conv);
-    try { const c = await host.call('Get', { conversation: conv.id }); if (!stopped) { conv = c; drawHead(c); } } catch (_) {}
+    drawHead(conv); cost();
+    try { const c = await host.call('Get', { conversation: conv.id }); if (!stopped) { conv = c; drawHead(c); cost(); } } catch (_) {}
     page();
   })();
-  return () => { stopped = true; };
+  return () => { stopped = true; offCosts(); };
 }
 
 export function mount(root, host) {

@@ -3,6 +3,20 @@
 // limit 1), so they match the rows ai.store holds for this viewer, not the page shown.
 export const view = { cell: 'ai.session', name: 'conv.list', speaks: [1], kit: 1 };
 
+// the cost line `tokens . $cost . time` of a conversation comes from the usage strip's module (conv.usage, ai.usage
+// Conversation{id}); it is served only to a viewer holding ai.usage:read, so without it the line is simply absent
+let usageP = null;
+export const usageMod = () => usageP || (usageP = import('./conv-usage.js').catch(() => null));
+const COST_TIP = 'tokens . $ cost . time';
+/** show a conversation's cost line in `span` (data-cost=<id>) when the usage module has it; ask for it when it has not */
+export async function showCost(span) {
+  const m = await usageMod();
+  if (!m) return;
+  const id = span.dataset.cost, k = m.costOf(id);
+  if (k) { span.textContent = k.known ? k.text : ''; span.title = k.known ? k.tip.join('\n') : 'no usage recorded for this conversation'; }
+  else m.wantCosts([id]);
+}
+
 const KINDS = [['All', null], ['Live', 'live'], ['Lanes', 'lane'], ['Workers', 'worker'], ['Sessions', 'session'], ['Chats', 'chat'], ['Terminals', 'terminal']];
 const PAGE = 300;
 
@@ -85,17 +99,31 @@ export function mountList(root, host, { onOpen }) {
       const live = isLive(c);
       out.push(h('button', { type: 'button', class: 'cv-row', 'data-id': c.id, 'aria-current': current === c.id ? 'true' : 'false', onclick: () => { current = c.id; mark(); onOpen(c); } },
         h('b', {}, h('span', { class: 'cv-dot' + (live ? ' live' : ''), 'aria-hidden': 'true' }), c.title || c.id),
-        h('span', { class: 'cv-meta' }, h('span', {}, c.kind), h('span', {}, c.node), h('span', {}, c.turns + ' msg'), h('span', {}, c.model || c.provider), h('span', {}, ago(c.last_ms)))));
+        h('span', { class: 'cv-meta' }, h('span', {}, c.kind), h('span', {}, c.node), h('span', {}, c.turns + ' msg'), h('span', {}, c.model || c.provider), h('span', {}, ago(c.last_ms))),
+        h('span', { class: 'cv-meta' }, h('span', { class: 'cv-cost', 'data-cost': c.id, 'aria-label': COST_TIP }, ''))));
     }
     if (r.total > list.length && kind !== 'live') out.push(h('p', { class: 'cv-more' }, 'Newest ' + list.length + ' of ' + r.total + ' shown; search or filter for the rest.'));
     rows.replaceChildren(...out);
+    watchCosts();
+  }
+  // cost lines for the rows in view only (one ai.usage Conversation call each, batched), refreshed when they arrive
+  let seen = null, offCosts = () => {};
+  async function watchCosts() {
+    const m = await usageMod();
+    if (!m || stopped) return;
+    offCosts(); offCosts = m.onCosts(() => rows.querySelectorAll('.cv-cost[data-cost]').forEach(showCost));
+    if (seen) seen.disconnect();
+    if (typeof IntersectionObserver === 'function') {
+      seen = new IntersectionObserver(es => { const ids = es.filter(e => e.isIntersecting).map(e => e.target.querySelector('.cv-cost')); ids.forEach(showCost); }, { root: rows, rootMargin: '200px' });
+      rows.querySelectorAll('.cv-row').forEach(r => seen.observe(r));
+    } else rows.querySelectorAll('.cv-cost[data-cost]').forEach(showCost);
   }
   const mark = () => rows.querySelectorAll('.cv-row').forEach(b => b.setAttribute('aria-current', b.dataset.id === current ? 'true' : 'false'));
 
   load();
   const every = setInterval(() => { if (!document.hidden) load(); }, 30000);
   return {
-    stop() { stopped = true; clearInterval(every); clearTimeout(timer); },
+    stop() { stopped = true; clearInterval(every); clearTimeout(timer); offCosts(); if (seen) seen.disconnect(); },
     focus(id) { const b = rows.querySelector('[data-id="' + id + '"]'); if (b) b.focus(); },
   };
 }

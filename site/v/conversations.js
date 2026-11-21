@@ -5,9 +5,13 @@
 import { mountList } from './conv-list.js';
 import { mountThread } from './conv-thread.js';
 
-export const view = { cell: 'ai.session', name: 'Conversations', speaks: [1], kit: 1 };
+// `also`: the other cell this layout talks to through the shell's relay (the usage strip, conv.usage)
+export const view = { cell: 'ai.session', also: ['conv.usage'], name: 'Conversations', speaks: [1], kit: 1 };
 
 const CSS = `
+.cv-usage{background:var(--bg)}
+@media (min-width: 761px){.cv-usage{position:sticky;top:0;z-index:2}}
+.cv-usage:empty{display:none}
 .cv{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:0;min-height:calc(100vh - 120px);border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden}
 .cv-l{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
 .cv-t{display:flex;flex-direction:column;min-width:0}
@@ -66,7 +70,12 @@ export function mount(root, host) {
   const left = h('section', { class: 'cv-l', 'aria-label': 'Conversations' });
   const centre = h('section', { class: 'cv-t', 'aria-label': 'Conversation' });
   const box = h('div', { class: 'cv' }, left, centre);
-  root.replaceChildren(box);
+  // the usage strip along the top, always visible: its module is served only to a viewer holding ai.usage:read
+  const strip = h('div', { class: 'cv-usage' });
+  root.replaceChildren(strip, box);
+  let stopStrip = () => {};
+  import('./conv-usage.js').then(m => { if (!gone) stopStrip = m.mountStrip(strip, host); }).catch(() => { strip.remove(); });
+  let gone = false;
   let stopThread = () => {};
   const list = mountList(left, host, {
     onOpen(c) {
@@ -76,5 +85,5 @@ export function mount(root, host) {
     },
   });
   stopThread = mountThread(centre, host, null, {});
-  return () => { list.stop(); stopThread(); };
+  return () => { gone = true; stopStrip(); list.stop(); stopThread(); };
 }

@@ -1,0 +1,259 @@
+{
+  "accounts": [
+    {
+      "label": "acct2",
+      "last_sample": "2026-11-21T06:26:45+00:00",
+      "logged_in_on": [
+        "debian",
+        "foreman-ops-1"
+      ],
+      "payment": "ok",
+      "plan": "Claude Max 5x",
+      "plan_price_month": 100.0,
+      "provider": "claude",
+      "state": "ok",
+      "windows": [
+        {
+          "account": "acct2",
+          "kind": "five_hour",
+          "locked_reason": null,
+          "offered": false,
+          "pct": null,
+          "resets_at": null,
+          "sampled_at": "2026-11-21T06:26:45+00:00",
+          "severity": null,
+          "source": "usage.watch@foreman-ops-1",
+          "stale_since": null,
+          "tenant": "rydenfalk"
+        },
+        {
+          "account": "acct2",
+          "kind": "seven_day",
+          "locked_reason": null,
+          "offered": true,
+          "pct": 16.0,
+          "resets_at": "2026-11-26T09:00:00.021901+00:00",
+          "sampled_at": "2026-11-21T06:26:45+00:00",
+          "severity": "normal",
+          "source": "usage.watch@foreman-ops-1",
+          "stale_since": null,
+          "tenant": "rydenfalk"
+        },
+        {
+          "account": "acct2",
+          "kind": "seven_day_fable",
+          "locked_reason": null,
+          "offered": true,
+          "pct": 7.0,
+          "resets_at": "2026-11-26T09:00:00.022121+00:00",
+          "sampled_at": "2026-11-21T06:26:45+00:00",
+          "severity": "normal",
+          "source": "usage.watch@foreman-ops-1",
+          "stale_since": null,
+          "tenant": "rydenfalk"
+        }
+      ]
+    },
+    {
+      "label": "ambience",
+      "last_sample": "2026-11-14T15:45:45+00:00",
+      "logged_in_on": [
+        "debian"
+      ],
+      "payment": "pastdue",
+      "plan": "Claude Max 20x",
+      "plan_price_month": 200.0,
+      "provider": "claude",
+      "state": "lapsed",
+      "windows": []
+    },
+    {
+      "label": "cenet",
+      "last_sample": "2026-11-14T15:45:45+00:00",
+      "logged_in_on": [
+        "debian"
+      ],
+      "payment": "unknown",
+      "plan": "unknown",
+      "plan_price_month": null,
+      "provider": "claude",
+      "state": "unknown",
+      "windows": [
+        {
+          "account": "cenet",
+          "kind": "seven_day",
+          "locked_reason": null,
+          "offered": true,
+          "pct": 39.0,
+          "resets_at": "2026-11-18T04:00:00.318828+00:00",
+          "sampled_at": "2026-11-14T15:45:45+00:00",
+          "severity": "normal",
+          "source": "usage.watch@debian",
+          "stale_since": "2026-11-12T03:34:55+00:00",
+          "tenant": "rydenfalk"
+        }
+      ]
+    },
+    {
+      "label": "gateway-claude-foreman-ops-1",
+      "last_sample": "2026-11-21T06:29:15Z",
+      "logged_in_on": [],
+      "payment": "unknown",
+      "plan": "",
+      "plan_price_month": null,
+      "provider": "",
+      "state": "unknown",
+      "windows": [
+        {
+          "account": "gateway-claude-foreman-ops-1",
+          "kind": "gateway_day",
+          "locked_reason": null,
+          "offered": true,
+          "pct": 2.0,
+          "resets_at": "2026-11-22T00:00:00Z",
+          "sampled_at": "2026-11-21T06:29:15Z",
+          "severity": null,
+          "source": "sub.gateway/GetQuota",
+          "stale_since": null,
+          "tenant": "rydenfalk"
+        }
+      ]
+    }
+  ],
+  "alerts": [
+    {
+      "at": "2026-11-21T05:38:57Z",
+      "event": {
+        "Lapsed": {
+          "account": "ambience",
+          "why": "payment past due"
+        }
+      },
+      "tenant": "rydenfalk",
+      "text": "ambience has lapsed: payment past due; no lane is placed on it until it clears"
+    }
+  ],
+  "at": "2026-11-21T06:31:45Z",
+  "devices": [
+    {
+      "arch": "aarch64",
+      "battery": null,
+      "cells_installed": [
+        "account.link",
+        "account.oauth",
+        "account.passkey",
+        "account.session",
+        "account.signin",
+        "account.token",
+        "ai.account",
+        "ai.provider#claude.terminal",
+        "ai.spend",
+        "ai.usage",
+        "ai.usage.key",
+        "ai.usage.sub",
+        "ai.usage.turns",
+        "cell.install",
+        "device.registry",
+        "llm.sub",
+        "sub.gateway",
+        "usage.meter",
+        "usage.watch"
+      ],
+      "cells_total": 538,
+      "class": "server",
+      "clis": [
+        {
+          "name": "claude",
+          "version": "2.1.302"
+        },
+        {
+          "name": "gemini",
+          "version": "0.67.0"
+        },
+        {
+          "name": "opencode",
+          "version": "1.19.5"
+        }
+      ],
+      "device_id": "c79d26491eaa3de8eab1eccd83942f96cfedb489584e2d212452dd32c2e9c979",
+      "last_seen": "2026-11-21T06:31:20Z",
+      "logins": [
+        "default"
+      ],
+      "name": "foreman-ops-1",
+      "online": true,
+      "os": "linux",
+      "tenant": "rydenfalk"
+    }
+  ],
+  "keys": [
+    {
+      "cache_read": 32724736,
+      "cache_write": 0,
+      "cost_usd": 2.775282,
+      "key_ref": "opencode-livekit",
+      "limit": null,
+      "month": "202611",
+      "month_spend": null,
+      "provider": "livekit",
+      "sampled_at": "2026-11-21T05:44:24Z",
+      "source": "counted",
+      "tenant": "rydenfalk",
+      "tokens_in": 1356345,
+      "tokens_out": 139893,
+      "why": "OpenCode database, priced with config/prices.toml where it has no cost"
+    }
+  ],
+  "month": {
+    "cache_read": 672843113,
+    "cache_write": 0,
+    "conversations": 29,
+    "counted_usd": 375.3,
+    "input": 0,
+    "keys_usd": 2.78,
+    "output": 1555170,
+    "subscription_usd": 100.0,
+    "total_usd": 102.78,
+    "turns": 531
+  },
+  "refs": [
+    {
+      "kind": "cell",
+      "label": "windows",
+      "to": "ai.usage.sub/Collect"
+    },
+    {
+      "kind": "cell",
+      "label": "keys",
+      "to": "ai.usage.key/Collect"
+    },
+    {
+      "kind": "cell",
+      "label": "turns",
+      "to": "ai.usage.turns/Record"
+    },
+    {
+      "kind": "cell",
+      "label": "devices",
+      "to": "device.registry/Probe"
+    },
+    {
+      "kind": "cell",
+      "label": "accounts",
+      "to": "ai.account/List"
+    }
+  ],
+  "tenant": "rydenfalk",
+  "today": {
+    "cache_read": 672843113,
+    "cache_write": 0,
+    "conversations": 29,
+    "counted_usd": 375.3,
+    "input": 0,
+    "keys_usd": 0.09,
+    "output": 1555170,
+    "subscription_usd": 3.33,
+    "total_usd": 3.42,
+    "turns": 531
+  }
+}

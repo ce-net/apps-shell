@@ -1,0 +1,116 @@
+{
+  "at": "2026-11-21T06:31:45Z",
+  "accounts": [
+    {
+      "label": "acct2",
+      "plan": "Claude Max 5x",
+      "state": "capped",
+      "lock": "capped, resets Thu 09:00 UTC",
+      "badge": null,
+      "unreadable": null,
+      "five": {
+        "name": "5h",
+        "state": "off",
+        "pct": null,
+        "value": "",
+        "note": "no 5-hour limit on this plan",
+        "bar": 0,
+        "stale": false
+      },
+      "seven": {
+        "name": "7d",
+        "state": "capped",
+        "pct": 100.0,
+        "value": "100%",
+        "note": "capped, resets Thu 09:00 UTC",
+        "bar": 100,
+        "stale": false
+      },
+      "day": null,
+      "chips": [
+        {
+          "name": "Fable",
+          "state": "normal",
+          "value": "7%",
+          "tip": "Fable week: 7%, resets Thu 09:00 UTC"
+        }
+      ]
+    },
+    {
+      "label": "gateway-claude-foreman-ops-1",
+      "plan": "",
+      "state": "ok",
+      "lock": null,
+      "badge": null,
+      "unreadable": null,
+      "five": null,
+      "seven": null,
+      "day": {
+        "name": "day",
+        "state": "normal",
+        "pct": 2.0,
+        "value": "2%",
+        "note": "resets 00:00 UTC",
+        "bar": 2,
+        "stale": false
+      },
+      "chips": []
+    },
+    {
+      "label": "cenet",
+      "plan": "",
+      "state": "ok",
+      "lock": null,
+      "badge": "stale, last sample 7 d ago",
+      "unreadable": null,
+      "five": null,
+      "seven": {
+        "name": "7d",
+        "state": "normal",
+        "pct": 39.0,
+        "value": "39%",
+        "note": "reset passed Wed 04:00 UTC, reading is old",
+        "bar": 39,
+        "stale": true
+      },
+      "day": null,
+      "chips": []
+    },
+    {
+      "label": "ambience",
+      "plan": "Claude Max 20x",
+      "state": "lapsed",
+      "lock": "payment past due",
+      "badge": "stale, last sample 7 d ago",
+      "unreadable": null,
+      "five": null,
+      "seven": null,
+      "day": null,
+      "chips": []
+    }
+  ],
+  "keys": [
+    {
+      "key_ref": "opencode-livekit",
+      "provider": "livekit",
+      "today": null,
+      "month": "$2.78",
+      "tip": "livekit 202611, 1.4M tok in, 140k tok out, counted here. OpenCode database, priced with config/prices.tom",
+      "stale": true
+    }
+  ],
+  "keys_today": "$0.09",
+  "device": {
+    "name": "foreman-ops-1",
+    "class": "server",
+    "online": true,
+    "logins": [
+      "acct2"
+    ],
+    "tip": "linux aarch64 server, online. CLIs: claude, gemini, opencode"
+  },
+  "alerts": [
+    "ambience has lapsed: payment past due; no lane is placed on it until it clears"
+  ],
+  "last_event": "2026-11-21T05:38:57Z"
+}

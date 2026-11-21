@@ -330,7 +330,7 @@ function hostFor(view, tab, notes) {
   }
   if (!view || typeof view.cell !== 'string' || !/^[a-z0-9.-]+$/.test(view.cell)) return host;
   const cell = view.cell;
-  const call = async (op, req, signal) => {
+  const callOf = cell => async (op, req, signal) => {
     if (!/^[A-Za-z]{1,32}$/.test(op)) throw new Error('bad op');
     let r;
     try {
@@ -341,6 +341,15 @@ function hostFor(view, tab, notes) {
     if (!r.ok) throw Object.assign(new Error((body && body.error) || 'HTTP ' + r.status), { status: r.status, refused: r.status === 403 });
     return body;
   };
+  const call = callOf(cell);
+  // `view.also`: other cells this view's layout talks to (the usage strip's conv.usage), each through the same relay
+  // as the viewer; the face's relay decides which of them it passes
+  host.other = {};
+  for (const n of Array.isArray(view.also) ? view.also : []) {
+    if (typeof n !== 'string' || !/^[a-z0-9.-]+$/.test(n)) continue;
+    const c = callOf(n);
+    host.other[n] = { h, call: (op, req) => c(op, req) };
+  }
   host.call = (op, req) => call(op, req);
   host.watch = (op, req, onDelta) => {
     let stopped = false, ctl = null, back = 1000;
