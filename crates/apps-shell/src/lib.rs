@@ -45,6 +45,7 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint-for:open.with",
     "wire.ws-door:mint-for:home.shell",
     "wire.ws-door:mint-for:feed.view",
+    "wire.ws-door:mint-for:ai.session",
     "approve.inbox:health",
     "site.cellmap:health",
     "foreman.shell:health",
@@ -53,13 +54,17 @@ pub const GRANT: &[&str] = &[
     "home.shell:health",
     "state.store:read",
     "feed.view:health",
+    "ai.session:health",
+    // the ARCHITECTURE tab's shell (repo:ce-net-net 1fde9d1): asked for health like every tab shell; this build carries
+    // no arch.map contract yet, so its tab stays down here until one does
+    "arch.map:health",
     "delegate:1",
 ];
 
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
 pub const DATA_CELLS: &[&str] = &[
     "approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls",
-    "open.with", "home.shell", "feed.view",
+    "open.with", "home.shell", "feed.view", "ai.session",
 ];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
@@ -76,7 +81,7 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
 
 /// Leif's abilities when the people file does not name him.
 pub const ROOT: &[&str] = &["approve.inbox:read", "site.cellmap:read", "cr.shell:open", "foreman.shell:open", "apps.shell:tabs", "search.hybrid:find", "search.mesh:find", "ref.resolve:read", "ref.pin:read",
-    "cell.search:search", "crm.people:read", "crm.promises:read", "crm.calls:read", "open.with:use", "home.shell:open", "home.shell:links"];
+    "cell.search:search", "crm.people:read", "crm.promises:read", "crm.calls:read", "open.with:use", "home.shell:open", "home.shell:links", "ai.session:list", "ai.session:read"];
 
 /// The Search tab's private reads: search.hybrid opens a private label only for an ability naming it exactly (its
 /// lib.rs PRIVATE), and every repo by the exact `read:repos`. A viewer's search carries only the ones they hold.
@@ -292,6 +297,7 @@ pub fn view_of(route: &str) -> Option<&'static str> {
         "/search/" => Some("v/search.js"),
         // not a file of this site: the module the feed cell ships (`GET /v/feed.js` asks its `Ui`)
         "/feed/" => Some("v/feed.js"),
+        "/conversations/" => Some("v/conversations.js"),
         _ => None,
     }
 }
@@ -324,6 +330,9 @@ pub fn view_needs(name: &str) -> Option<&'static str> {
         "v/pending.js" => "approve.inbox:read",
         "v/cells-summary.js" => "site.cellmap:read",
         "v/links.js" => "home.shell:links",
+        // the two UI cells of the Conversations tab (v/conversations.js lays them out)
+        "v/conv-list.js" => "ai.session:list",
+        "v/conv-thread.js" => "ai.session:read",
         _ => return None,
     })
 }

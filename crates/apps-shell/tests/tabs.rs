@@ -18,7 +18,7 @@ fn tabs_follow_the_chain() {
     assert!(routes(&[]).is_empty(), "no rights: no tabs");
     assert_eq!(routes(&["approve.inbox:read", "approve.inbox:where:requester=t-approver"]), ["/approvals/"]);
     assert_eq!(routes(&["approve.inbox:read", "cr.shell:open"]), ["/approvals/", "/control-room/"]);
-    assert_eq!(routes(ROOT), ["/home/", "/foreman/", "/search/", "/approvals/", "/control-room/", "/core/"]);
+    assert_eq!(routes(ROOT), ["/home/", "/foreman/", "/conversations/", "/search/", "/approvals/", "/control-room/", "/core/"]);
     assert_eq!(routes(&["search.hybrid:find"]), ["/search/"], "the Search tab needs only search.hybrid:find");
     assert!(routes(&["approve.inbox:where:requester=x"]).is_empty(), "a caveat alone opens nothing");
 }
@@ -29,7 +29,7 @@ fn a_tab_whose_shell_stopped_answering_is_gone() {
     let mut live = all_live(now);
     live.insert("approve.inbox".into(), now - LIVE_MS - 1);
     let r: Vec<String> = tabs_for(&s(ROOT), &live, now).into_iter().map(|t| t.route).collect();
-    assert_eq!(r, ["/home/", "/foreman/", "/search/", "/control-room/", "/core/"]);
+    assert_eq!(r, ["/home/", "/foreman/", "/conversations/", "/search/", "/control-room/", "/core/"]);
     live.remove("site.cellmap");
     assert!(!tabs_for(&s(ROOT), &live, now).iter().any(|t| t.route == "/core/"), "never answered: no tab");
 }
@@ -244,4 +244,32 @@ fn no_file_of_the_site_names_the_feed_cell() {
     let mut hits = vec![];
     walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site"), &mut hits);
     assert!(hits.is_empty(), "{hits:?}");
+}
+
+/// The Conversations tab (AI-AS-CELLS slice 2): emerges with ai.session:list while ai.session answers; its views are
+/// this site's (conv.list and conv.thread, laid out by v/conversations.js) and its data relay is read only.
+#[test]
+fn the_conversations_tab_needs_ai_session_list_and_goes_when_ai_session_stops() {
+    let now = 1_000_000;
+    let mut live = all_live(now);
+    let routes = |a: &[&str], live: &BTreeMap<String, u64>| tabs_for(&s(a), live, now).into_iter().map(|t| t.route).collect::<Vec<_>>();
+    assert_eq!(routes(&["ai.session:list"], &live), ["/conversations/"]);
+    assert_eq!(routes(&["ai.session:list", "ai.session:read"], &live), ["/conversations/"]);
+    assert!(routes(&["ai.session:read", "ai.session:health", "ai.session:open"], &live).is_empty(), "only :list opens the tab");
+    assert!(routes(ROOT, &live).contains(&"/conversations/".to_string()));
+    live.insert("ai.session".into(), now - LIVE_MS - 1);
+    assert!(routes(&["ai.session:list"], &live).is_empty(), "ai.session silent: no tab");
+    assert_eq!(view_of("/conversations/"), Some("v/conversations.js"));
+    assert_eq!((view_needs("v/conv-list.js"), view_needs("v/conv-thread.js")), (Some("ai.session:list"), Some("ai.session:read")));
+    // the shell may mint the viewer's own ai.session rights and ask ai.session's health, nothing more of it
+    let mine: Vec<&&str> = GRANT.iter().filter(|g| g.contains("ai.session")).collect();
+    assert_eq!(mine, [&"wire.ws-door:mint-for:ai.session", &"ai.session:health"]);
+    assert_eq!(viewer_grant(&s(&["ai.session:list", "ai.session:read", "ai.session:*", "feed.view:read"])), s(&["ai.session:list", "ai.session:read", "feed.view:read"]));
+    assert_eq!(for_cell(&s(&["ai.session:list", "feed.view:read"]), "ai.session", "ai.session:read"), None, "Read needs ai.session:read");
+    for f in ["conversations.js", "conv-list.js", "conv-thread.js"] {
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site/v").join(f)).unwrap();
+        for bad in ["fetch(", "localStorage", "document.cookie", "window.open", "location.href", "innerHTML", "http://", "https://"] {
+            assert!(!src.contains(bad), "{f} holds {bad}");
+        }
+    }
 }

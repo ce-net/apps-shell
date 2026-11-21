@@ -12,7 +12,7 @@ ce-wire = { git = "https://github.com/Leif-Rydenfalk/rust-stack", rev = "d283bd5
 ce-gate = { git = "https://github.com/Leif-Rydenfalk/rust-stack", rev = "d283bd528f96effabcf4dec56eb4fad1bec08d27" }
 ui-chain = { git = "https://github.com/ce-net/ui-cells", rev = "103703220a8554d07af1ed6a1eea5ef0e5a72090" }
 site-gateway = { git = "https://github.com/ce-net/ui-cells", rev = "103703220a8554d07af1ed6a1eea5ef0e5a72090" }
-ce-net-net = { git = "https://github.com/ce-net/ce-net-net", rev = "02ef21438255c89335e2299109a2846b0162c63d" }
+ce-net-net = { git = "https://github.com/ce-net/ce-net-net", rev = "f74c2a539239cda670dee0f356da341c6a00b9a2" }
 # the ce-net browser: open.with (which view opens a ce-ref for this viewer) and home.shell (Home's layout)
 open-with-api = { git = "https://github.com/ce-net/open-with", rev = "595aebda99982223d0c51925792a64e478f0a660" }
 home-shell-api = { git = "https://github.com/ce-net/home-shell", rev = "a2ee8813e2eccddbd3428c7c8004ec1ff0182668" }

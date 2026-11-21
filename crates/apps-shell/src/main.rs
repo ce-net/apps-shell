@@ -1,7 +1,7 @@
 //! `apps-shell serve`: the apps.shell cell behind this machine's door, its liveness loop, and its gateway face.
 //!
 //! The face listens on loopback once per tab route it serves (`$APPS_SHELL_HTTP`, default
-//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
+//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/,127.0.0.1:8886=/conversations/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
 //! the prefix cut and the person signed (`X-Ce-Person*`, the gate's per-host key, repo:ui-cells site-gateway's check).
 //! - `GET /` the page (the same bytes for everyone; it names no system), `/_k/*` the kit;
 //! - `GET /tabs.json` this viewer's tabs: allowed by their abilities and live (their shell answered HealthOp by name
@@ -85,6 +85,7 @@ async fn shell_ok(shell: &str) -> bool {
         "search.hybrid" => health!(hybrid_api::SearchHybrid, hybrid_api::HealthOp, "search.hybrid:health"),
         "home.shell" => health!(home_shell_api::HomeShell, home_shell_api::HealthOp, "home.shell:health"),
         "feed.view" => health!(feed_view_api::FeedView, feed_view_api::HealthOp, "feed.view:health"),
+        "ai.session" => health!(ai_session_api::AiSession, ai_session_api::HealthOp, "ai.session:health"),
         // a shell whose contract this build does not carry yet: never live here (its system shows in site.cellmap)
         _ => None,
     };
@@ -219,6 +220,102 @@ mod door_api {
         ops {
             1 => HealthOp(()) -> Health, needs "wire.ws-door:health";
             2 => Mint(MintReq) -> Result<Minted, MintError>, needs "wire.ws-door:mint";
+        }
+    }
+}
+
+/// ai.session's contract (repo:ai-session crates/ai-session-api, major 1), copied verbatim like feed_view_api: its doc
+/// comments are part of the schema hash (0xb35024aa61e4992c, pinned by a test), so not a character may change. The
+/// Conversations tab relays List, Get and Read only (CONV_OPS).
+#[allow(dead_code)]
+mod ai_session_api {
+    ce_wire::api! {
+        api AiSession = "ai.session", version 1;
+        types {
+            /// Health contract: these three fields, in this order, in every cell.
+            pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+            /// Where a shown value came from (ce-ref): kind msg, goal, commit, file, url, api or cell.
+            pub struct Ref { pub label: String, pub kind: String, pub to: String }
+            pub enum Role { User, Assistant, Tool }
+            /// One piece of a message. `Attachment` is a ce-ref. Tool args and outputs are JSON text.
+            pub enum Part { Text(String), Attachment(String), ToolCall { id: String, api: String, op: String, arg: String }, ToolResult { id: String, ok: bool, out: String }, Thinking(String) }
+            pub struct Message { pub id: String, pub role: Role, pub parts: Vec<Part>, pub at_ms: u64, pub by: String }
+            /// Tokens of one turn as the provider reported them; `input` excludes the cache columns.
+            pub struct Usage { pub input: u64, pub output: u64, pub cache_read: u64, pub cache_write: u64, pub cost_usd: f64 }
+            /// `Bare` (default): the provider's own model, nothing injected. `Code`: the provider's coding tools in `cwd`.
+            pub enum Harness { Bare, Code { cwd: String, edit: bool, shell: bool } }
+            pub enum Mode { Headless, Attached, Import }
+            /// 0 = no cap for that column.
+            pub struct Budget { pub max_tokens: u64, pub max_cost_usd: f64, pub max_wall_s: u32 }
+            /// The tool's own session id on the node that holds its history file.
+            pub struct NativeSession { pub provider: String, pub node: String, pub id: String }
+            pub enum OffReason { NoAuth, NotInstalled, RealmRule { rule: String }, NeedsYes { who: String }, TermsUnverified, Unproven }
+            pub enum Need { Tools, Vision, LongContext, Local }
+            pub struct ModelRow { pub id: String, pub context: u32, pub needs: Vec<Need>, pub paid: bool }
+            pub enum HarnessKind { Bare, Code }
+            pub struct ImportSource { pub format: String, pub roots: Vec<String>, pub content_default: bool }
+            /// Where the secret lives: a config dir that holds a login, or a key-stack NAME (never a value).
+            pub enum AuthMethod { SubscriptionLogin { config_dir: String }, ApiKey { key: String }, OAuthDevice, LocalNone, ImportOnly }
+            pub enum ModelList { Fixed(Vec<ModelRow>), FromProvider { allow: Vec<String>, deny: Vec<String> } }
+            pub struct SpendCap { pub usd: f64, pub window: String, pub shared_pool: String }
+            pub struct Limits { pub max_parallel: u32, pub max_turn_s: u32, pub max_tokens_turn: u64, pub rpm: u32, pub spend: Option<SpendCap> }
+            pub struct Placement { pub node: String, pub bin: Option<String>, pub min_version: Option<String>, pub modes: Vec<Mode>, pub weight: u32 }
+            pub enum Egress { ModelRoute, NoEgress }
+            pub enum TermsFlag { OwnerOnly, TenantAutomation, Unverified }
+            /// One row per (tenant, provider), section 2. `accounts` are names of logins or key accounts, in preference order.
+            pub struct ProviderConfig { pub tenant: String, pub provider: String, pub enabled: bool, pub off: Option<OffReason>, pub auth: AuthMethod, pub accounts: Vec<String>, pub models: ModelList, pub default_model: Option<String>, pub limits: Limits, pub placement: Vec<Placement>, pub never_on: Vec<String>, pub harness: Vec<HarnessKind>, pub egress: Egress, pub import: Option<ImportSource>, pub terms: TermsFlag }
+            /// `Named("claude.terminal")`, or any enabled provider that has every need.
+            pub enum ProviderPick { Named(String), Any(Vec<Need>) }
+            /// A capability the model may call: one (api, op) and the caller's chain attenuated to it (hex).
+            pub struct ToolGrant { pub api: String, pub op: String, pub chain: String }
+            /// `system` and `profile` are ce-refs. Both None and `harness: Bare` = the first tokens the model sees are the
+            /// caller's first `Send`. Resolvable today: `inline:<text>` and `file:<absolute path on the session's node>`.
+            pub struct OpenReq { pub provider: ProviderPick, pub model: Option<String>, pub account: Option<String>, pub system: Option<String>, pub profile: Option<String>, pub tools: Vec<ToolGrant>, pub harness: Harness, pub place: Option<String>, pub title: Option<String>, pub parent: Option<String>, pub budget: Budget }
+            pub struct Opened { pub conversation: String, pub provider: String, pub account: String, pub model: String, pub node: String, pub refs: Vec<Ref> }
+            /// `wait: true` answers the assistant message; `false` answers at once, read `Events`.
+            pub struct SendReq { pub conversation: String, pub parts: Vec<Part>, pub expect: Option<String>, pub wait: bool }
+            pub struct Sent { pub conversation: String, pub turn: u32, pub message: Option<Message>, pub usage: Option<Usage>, pub refs: Vec<Ref> }
+            pub enum State { Idle, Busy, WaitingTool, WaitingApproval, Capped { resets_s: u32 }, Closed, Lost }
+            /// Typed refusals; never a prose error.
+            pub enum Refusal { NoAccount, Capped { resets_s: u32 }, NoPath(String), Shape(String), Budget(String), Denied { api: String, op: String }, Policy { reason: String }, NotFound(String), Invalid(String), Busy, Failed(String) }
+            pub enum Event { Delta { text: String }, ToolCall { id: String, api: String, op: String, arg: String }, ToolResult { id: String, ok: bool, out: String }, Turn { message: Message, usage: Usage }, State(State), Refused(Refusal) }
+            pub struct ReadReq { pub conversation: String, pub from: u32, pub limit: u32 }
+            pub struct Turns { pub conversation: String, pub turns: Vec<Message>, pub next: Option<u32>, pub refs: Vec<Ref> }
+            /// A new conversation from turns 0..=`at` of an old one, optionally on another provider (history replayed).
+            pub struct ForkReq { pub conversation: String, pub at: u32, pub provider: Option<ProviderPick>, pub account: Option<String>, pub model: Option<String>, pub title: Option<String> }
+            pub struct ConvReq { pub conversation: String }
+            /// Every filter is optional; `limit` 0 = 200 (at most 1000). `q` matches title, cwd and id.
+            pub struct ListReq { pub provider: Option<String>, pub account: Option<String>, pub node: Option<String>, pub kind: Option<String>, pub source: Option<String>, pub parent: Option<String>, pub q: Option<String>, pub limit: u32 }
+            /// One conversation row of `ai.store` (metadata; turns are read with `Read`). `kind`: chat, worker, lane, session.
+            pub struct Conversation { pub id: String, pub tenant: String, pub owner: String, pub title: String, pub provider: String, pub account: String, pub model: String, pub node: String, pub profile: Option<String>, pub parent: Option<String>, pub state: State, pub kind: String, pub source: String, pub cwd: String, pub turns: u32, pub opened_ms: u64, pub last_ms: u64, pub usage: Usage, pub native: Option<NativeSession> }
+            pub struct Count { pub key: String, pub n: u32 }
+            /// Newest first. `total` and `by_source` count every match, not just the page.
+            pub struct Listed { pub conversations: Vec<Conversation>, pub total: u32, pub by_source: Vec<Count>, pub refs: Vec<Ref> }
+            pub struct ConfigKey { pub provider: String }
+            pub struct ConfigOff { pub provider: String, pub off: OffReason }
+            /// Run each named adapter's read-only `Import` (empty = every enabled provider with an import source).
+            pub struct ImportRunReq { pub providers: Vec<String>, pub since_ms: Option<u64> }
+            pub struct Imported { pub seen: u32, pub new: u32, pub updated: u32, pub skipped: u32, pub by_source: Vec<Count>, pub refs: Vec<Ref> }
+        }
+        ops {
+            1 => HealthOp(()) -> Health, needs "ai.session:health";
+            2 => Open(OpenReq) -> Result<Opened, Refusal>, needs "ai.session:open", deadline_ms 120000;
+            3 => Send(SendReq) -> Result<Sent, Refusal>, needs "ai.session:send", deadline_ms 1800000;
+            4 => Read(ReadReq) -> Result<Turns, Refusal>, needs "ai.session:read";
+            5 => Fork(ForkReq) -> Result<Opened, Refusal>, needs "ai.session:open", deadline_ms 120000;
+            6 => Interrupt(ConvReq) -> Result<State, Refusal>, needs "ai.session:send";
+            7 => Close(ConvReq) -> Result<State, Refusal>, needs "ai.session:close";
+            8 => List(ListReq) -> Result<Listed, Refusal>, needs "ai.session:list";
+            9 => Get(ConvReq) -> Result<Conversation, Refusal>, needs "ai.session:read";
+            10 => ConfigList(()) -> Result<Vec<ProviderConfig>, Refusal>, needs "ai.session:config.read";
+            11 => ConfigGet(ConfigKey) -> Result<ProviderConfig, Refusal>, needs "ai.session:config.read";
+            12 => ConfigPut(ProviderConfig) -> Result<ProviderConfig, Refusal>, needs "ai.session:config.write";
+            13 => ConfigEnable(ConfigKey) -> Result<ProviderConfig, Refusal>, needs "ai.session:config.write";
+            14 => ConfigDisable(ConfigOff) -> Result<ProviderConfig, Refusal>, needs "ai.session:config.write";
+            15 => ImportRun(ImportRunReq) -> Result<Imported, Refusal>, needs "ai.session:import", deadline_ms 3600000;
+        }
+        streams {
+            20 => Events(ConvReq) -> stream Event, needs "ai.session:read";
         }
     }
 }
@@ -1610,6 +1707,56 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
     }
 }
 
+/// The ops the Conversations relay passes (slice 2 of ce docs/AI-AS-CELLS-2026-11-18.md: read only), and nothing else.
+const CONV_OPS: &[&str] = &["List", "Get", "Read"];
+
+/// `POST /api/cell/ai.session/<Op>`: List, Get or Read as the viewer (JSON in, JSON out), with a grant wire.ws-door
+/// minted for their own `ai.session:*` rights, so ai.session's gate decides and its tenant rule cuts the rows.
+async fn conv_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -> (&'static str, Vec<u8>) {
+    use ai_session_api::*;
+    let err = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+    if !CONV_OPS.contains(&op) {
+        return err("404 Not Found", "no such op".into());
+    }
+    let need = if op == "List" { "ai.session:list" } else { "ai.session:read" };
+    let Some(ab) = for_cell(abilities, "ai.session", need) else { return err("403 Forbidden", "refused".into()) };
+    let c = match client::<AiSession>(person, &ab).await {
+        Ok(mut c) => {
+            // Read of an imported row reads the transcript on its node (one adapter call)
+            c.deadline = Duration::from_secs(25);
+            c
+        }
+        Err(e) if e == "refused" => return err("403 Forbidden", "refused".into()),
+        Err(e) => return err("503 Service Unavailable", e),
+    };
+    fn out<T: serde::Serialize>(r: Result<Result<T, Refusal>, ce_wire::WireError>) -> (&'static str, Vec<u8>) {
+        let e = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+        match r {
+            Ok(Ok(v)) => ("200 OK", json(&v)),
+            Ok(Err(Refusal::NotFound(m))) => e("404 Not Found", m),
+            Ok(Err(Refusal::Invalid(m))) | Ok(Err(Refusal::Shape(m))) => e("400 Bad Request", m),
+            Ok(Err(Refusal::Denied { .. })) => e("403 Forbidden", "refused".into()),
+            Ok(Err(Refusal::NoPath(m))) => e("502 Bad Gateway", m),
+            Ok(Err(x)) => e("502 Bad Gateway", format!("{x:?}")),
+            Err(ce_wire::WireError::Refused(_)) => e("403 Forbidden", "refused".into()),
+            Err(x) => e("503 Service Unavailable", x.to_string()),
+        }
+    }
+    macro_rules! call_op {
+        ($op:ty) => {{
+            match serde_json::from_slice(body) {
+                Ok(req) => out(c.call::<$op>(&req).await),
+                Err(x) => err("400 Bad Request", format!("body: {x}")),
+            }
+        }};
+    }
+    match op {
+        "List" => call_op!(List),
+        "Get" => call_op!(Get),
+        _ => call_op!(Read),
+    }
+}
+
 async fn one(f: Arc<Face>, mut s: TcpStream) {
     let mut buf = Vec::with_capacity(2048);
     loop {
@@ -1632,7 +1779,8 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
     let is_head = method == "HEAD";
     let route = path.split(['?', '#']).next().unwrap_or("/").to_string();
     // the one POST: the Feed data relay (JSON in, JSON out; a cross-site form cannot send application/json)
-    let relay = method == "POST" && route.starts_with("/api/cell/feed.view/");
+    // and the Conversations relay (ai.session List, Get, Read), on the face of /conversations/ only
+    let relay = method == "POST" && (route.starts_with("/api/cell/feed.view/") || (route.starts_with("/api/cell/ai.session/") && f.route == "/conversations/"));
     if method != "GET" && !is_head && !relay {
         return reply(&mut s, "405 Method Not Allowed", "text/plain", b"", false).await;
     }
@@ -1660,8 +1808,9 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
     if relay {
         let live = f.live.read().await.clone();
         let mine = tabs_for(&ab, &live, ui_chain::now_ms());
-        let op = route.strip_prefix("/api/cell/feed.view/").unwrap_or("");
-        if !mine.iter().any(|t| t.route == "/feed/") {
+        let (cell, op) = route.strip_prefix("/api/cell/").and_then(|r| r.split_once('/')).unwrap_or(("", ""));
+        let tab = if cell == "ai.session" { "/conversations/" } else { "/feed/" };
+        if !mine.iter().any(|t| t.route == tab) {
             return reply(&mut s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await;
         }
         let low = head.to_ascii_lowercase();
@@ -1680,7 +1829,7 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
             }
         }
         body.truncate(len);
-        let (st, out) = feed_relay(&person, &ab, op, &body).await;
+        let (st, out) = if cell == "ai.session" { conv_relay(&person, &ab, op, &body).await } else { feed_relay(&person, &ab, op, &body).await };
         return reply(&mut s, st, "application/json", &out, false).await;
     }
     if let Some(sha) = route.strip_prefix("/_c/").and_then(|r| r.strip_suffix(".js")) {
@@ -1744,7 +1893,7 @@ async fn serve() -> Result<(), String> {
     tokio::spawn(liveness(live.clone()));
     let person_key: PathBuf = env_or("CE_GATE_PERSON_KEY", format!("{}/.config/work-show/person-key", home())).into();
     let people: PathBuf = env_or("APPS_SHELL_PEOPLE", format!("{}/.config/apps-shell/people.json", home())).into();
-    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/".into()).split(',') {
+    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/,127.0.0.1:8886=/conversations/".into()).split(',') {
         let (addr, route) = pair.split_once('=').ok_or_else(|| format!("APPS_SHELL_HTTP: {pair}: want <addr>=<route>"))?;
         let f = Arc::new(Face { route: route.into(), live: live.clone(), person_key: person_key.clone(), people: people.clone() });
         let addr = addr.to_string();
@@ -1754,6 +1903,12 @@ async fn serve() -> Result<(), String> {
                 std::process::exit(1)
             }
         });
+    }
+    // a proof copy beside the live cell (test people file, test person key, other ports): the faces and the liveness
+    // loop only, never a second apps.shell at the door
+    if std::env::var("APPS_SHELL_FACES_ONLY").is_ok_and(|v| v == "1") {
+        eprintln!("apps-shell: faces only (APPS_SHELL_FACES_ONLY=1), not at the door");
+        std::future::pending::<()>().await;
     }
     let (l1, p1) = (live.clone(), people.clone());
     let gate = ce_gate::Gate::<AppsShell>::new(me, ce_gate::mesh_roots()).into_fn();
@@ -1814,6 +1969,19 @@ mod contracts {
     /// --json`, 2026-11-17).
     /// feed.view major 2 as repo:feed-view crates/feed-view-api has it (commit 32b4c3a): another hash and every call is
     /// refused as another api. Its rights are what `needs` says; the relay passes five ops.
+    #[test]
+    /// ai.session major 1 as repo:ai-session crates/ai-session-api has it: another hash and every call is refused by
+    /// the cell's door, so this pins it; the relay passes the three read ops only.
+    fn copied_ai_session_contract_matches_the_cell() {
+        use ce_wire::Api;
+        assert_eq!(<super::ai_session_api::AiSession as Api>::SCHEMA, 0xb35024aa61e4992c);
+        let ops: Vec<&str> = super::ai_session_api::AiSession::OPS.iter().map(|o| o.name).collect();
+        for op in super::CONV_OPS {
+            assert!(ops.contains(op), "{op}");
+        }
+        assert_eq!(super::CONV_OPS, &["List", "Get", "Read"], "slice 2 is read only: no Open, Send, Fork, Import or Config op");
+    }
+
     #[test]
     fn copied_feed_view_contract_matches_the_cell() {
         use ce_wire::Api;
