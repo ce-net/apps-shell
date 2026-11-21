@@ -148,6 +148,31 @@ async fn reply_cached(s: &mut TcpStream, status: &str, ty: &str, body: &[u8], he
     }
 }
 
+/// The kit's hash: every file of the site (16 hex), so a new build is a new address and an old one is never served
+/// from a stale cache.
+fn kit_hash() -> &'static str {
+    static H: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    H.get_or_init(|| {
+        // FNV-1a over names and bytes: the same build, the same hash on every node and every start
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for (n, b) in site::SITE.iter() {
+            for x in n.as_bytes().iter().chain([0u8].iter()).chain(b.iter()) {
+                h ^= u64::from(*x);
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        format!("{h:016x}")
+    })
+}
+
+/// `/_h/<16 hex>/<rest>` -> (`/<rest>`, whether the hash is this build's kit); any other route as it is.
+fn unhash(route: String) -> (String, bool) {
+    match route.strip_prefix("/_h/").and_then(|r| r.split_once('/')) {
+        Some((h, rest)) if h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()) => (format!("/{rest}"), h == kit_hash()),
+        _ => (route, false),
+    }
+}
+
 fn json<T: serde::Serialize>(v: &T) -> Vec<u8> {
     serde_json::to_vec(v).unwrap_or_default()
 }
@@ -2501,6 +2526,10 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
     let (method, path) = (first.next().unwrap_or(""), first.next().unwrap_or("/").to_string());
     let is_head = method == "HEAD";
     let route = path.split(['?', '#']).next().unwrap_or("/").to_string();
+    // the page's base is /<tab>/_h/<kit hash>/ (P1 of repo:ce docs/SPEED-AND-SEARCH-2026-11-21.md): every kit file and
+    // view the page loads has the hash in its address, so it is kept immutable; an older hash still answers, uncached
+    let (route, hashed) = unhash(route);
+    let kept = if hashed { "private, max-age=31536000, immutable" } else { "no-store" };
     // the one POST: the Feed data relay (JSON in, JSON out; a cross-site form cannot send application/json)
     // and the Conversations relay (ai.session List, Get, Read), on the face of /conversations/ only
     let relay = method == "POST" && (route.starts_with("/api/cell/feed.view/") || (route.starts_with("/api/cell/ai.session/") && f.route == "/conversations/") || (route.starts_with("/api/cell/conv.usage/") && f.route == "/conversations/") || (route.starts_with("/api/cell/term.session/") && f.route == "/conversations/"));
@@ -2512,13 +2541,27 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         return reply(&mut s, "405 Method Not Allowed", "text/plain", b"", false).await;
     }
     if route == "/" || route == "/index.html" || route.starts_with("/o/") {
-        // the page names its own tab route as its base, so /o/<ref> loads the same kit and views
-        let page = String::from_utf8_lossy(file("index.html").unwrap_or_default()).replacen("<head>", &format!("<head>\n<base href=\"{}\">", f.route), 1);
+        // the page names its own tab route and the kit's hash as its base, so /o/<ref> loads the same kit and views and
+        // a browser keeps them; for a signed-in viewer it also carries their tabs (what tabs.json would answer first)
+        // and names its modules up front, so the kit, the tab's view and the tabs are one round trip, not four
+        let person = site_gateway::read_key(&f.person_key).and_then(|k| site_gateway::signed_person(&head, &k, now_s())).unwrap_or_default();
+        let mut extra = format!("<head>\n<base href=\"{}_h/{}/\">\n<link rel=\"modulepreload\" href=\"_k/shell.js\">\n<link rel=\"modulepreload\" href=\"_k/ref.js\">", f.route, kit_hash());
+        let mut tail = String::new();
+        if !person.is_empty() {
+            let ab = f.abilities(&person);
+            let t = tabs(&f, &ab, &person).await;
+            if let Some(v) = t.tabs.iter().find(|x| x.route == t.here).and_then(|x| x.view.clone()).filter(|v| v != "v/feed.js" && v != "v/architecture.js") {
+                extra.push_str(&format!("\n<link rel=\"modulepreload\" href=\"{v}\">"));
+            }
+            // JSON in a script element: "</" written "<\/" so no value can end the element
+            tail = format!("<script type=\"application/json\" id=\"ce-tabs\">{}</script>\n", String::from_utf8_lossy(&json(&t)).replace("</", "<\\/"));
+        }
+        let page = String::from_utf8_lossy(file("index.html").unwrap_or_default()).replacen("<head>", &extra, 1).replacen("</body>", &format!("{tail}</body>"), 1);
         return reply(&mut s, "200 OK", "text/html; charset=utf-8", page.as_bytes(), is_head).await;
     }
     if let Some(k) = route.strip_prefix("/_k/") {
         return match file(&format!("_k/{k}")) {
-            Some(b) => reply(&mut s, "200 OK", kind(k), b, is_head).await,
+            Some(b) => reply_cached(&mut s, "200 OK", kind(k), b, is_head, kept).await,
             None => reply(&mut s, "404 Not Found", "text/plain", b"no such file", is_head).await,
         };
     }
@@ -2630,7 +2673,8 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         // the same 404 for a view that does not exist and one this viewer may not have
         let open_to = mine.iter().any(|t| view_of(&t.route) == Some(name.as_str())) || (!mine.is_empty() && view_needs(&name).is_some_and(|n| covers(&ab, n)));
         return match open_to.then(|| file(&name)).flatten() {
-            Some(b) => reply(&mut s, "200 OK", "text/javascript; charset=utf-8", b, is_head).await,
+            // the same bytes for everyone it is open to: kept by the browser under the hashed address
+            Some(b) => reply_cached(&mut s, "200 OK", "text/javascript; charset=utf-8", b, is_head, kept).await,
             None => reply(&mut s, "404 Not Found", "text/plain", b"no such file", is_head).await,
         };
     }
@@ -2861,6 +2905,17 @@ mod search_parts {
     fn hit(path: &str, acl: &str, machine: &str) -> hybrid_api::Hit {
         hybrid_api::Hit { id: path.into(), source: "files".into(), machine: machine.into(), path: path.into(), title: path.rsplit('/').next().unwrap_or("").into(),
             snippet: String::new(), score: 0.5, acl: acl.into(), bm25_rank: 1, vec_rank: 1 }
+    }
+
+    #[test]
+    fn the_kit_hash_is_in_the_address_and_only_this_builds_is_kept() {
+        let h = kit_hash();
+        assert_eq!(h.len(), 16);
+        assert_eq!(unhash(format!("/_h/{h}/_k/shell.js")), ("/_k/shell.js".to_string(), true));
+        assert_eq!(unhash("/_h/0123456789abcdef/_k/shell.js".to_string()), ("/_k/shell.js".to_string(), h == "0123456789abcdef"));
+        assert_eq!(unhash("/_k/shell.js".to_string()), ("/_k/shell.js".to_string(), false));
+        assert_eq!(unhash("/_h/nothex/_k/x".to_string()).1, false);
+        assert_eq!(unhash(format!("/_h/{h}/api/search")).0, "/api/search");
     }
 
     /// The first part carries the group that is back and says which asks are still out; Best fuses what is back; a

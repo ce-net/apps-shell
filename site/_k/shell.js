@@ -438,11 +438,16 @@ const icon = () => {
 
 let first = true;
 async function tick() {
-  let r;
-  try { r = await fetch('tabs.json', { cache: 'no-store', credentials: 'same-origin' }); } catch (_) { return; }
-  if (r.status === 401) return say('sign in', 'Sign in.', 'Sign in to see what is open to you.', ['Sign in', '/login?next=' + encodeURIComponent(location.pathname)]);
-  if (!r.ok) return;
-  const d = await r.json();
+  let r, d;
+  // the first answer rides in the page (its tabs, as tabs.json would say them); every later one is asked
+  const inline = first && document.getElementById('ce-tabs');
+  if (inline) { try { d = JSON.parse(inline.textContent); } catch (_) { d = null; } inline.remove(); }
+  if (!d) {
+    try { r = await fetch('tabs.json', { cache: 'no-store', credentials: 'same-origin' }); } catch (_) { return; }
+    if (r.status === 401) return say('sign in', 'Sign in.', 'Sign in to see what is open to you.', ['Sign in', '/login?next=' + encodeURIComponent(location.pathname)]);
+    if (!r.ok) return;
+    d = await r.json();
+  }
   here = d.here; tabsNow = d.tabs;
   // a tab whose route the gate does not serve yet carries `href`: where its view opens meanwhile (under another tab)
   const at = location.pathname + location.search;
