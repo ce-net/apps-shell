@@ -58,6 +58,36 @@ async function get(op, req = {}) {
   } finally { clearTimeout(t); }
 }
 
+// the same GET as JSON lines as the answer grows (stream=1): onPart(data) per line; resolves like get() with the last
+async function getParts(op, req, onPart) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(req || {})) if (v != null && v !== '') q.set(k, String(v));
+  q.set('stream', '1');
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch('api/' + op + '?' + q, { cache: 'no-store', credentials: 'same-origin', signal: ctl.signal });
+    if (!r.ok || !r.body) return { status: r.status, ok: false, data: await r.json().catch(() => ({})) };
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    let buf = '', last = null;
+    for (;;) {
+      const { value, done } = await rd.read();
+      if (value) buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        try { last = JSON.parse(line); } catch (_) { continue; }
+        onPart(last);
+      }
+      if (done) break;
+    }
+    return last ? { status: 200, ok: true, data: last } : { status: 502, ok: false, data: { error: 'no answer' } };
+  } catch (e) {
+    return { status: 0, ok: false, data: { error: ctl.signal.aborted ? 'no answer in 25 s' : 'not reachable' }, timeout: ctl.signal.aborted };
+  } finally { clearTimeout(t); }
+}
+
 // ---- the views the shell can mount: view name -> module and the ops of its own cell it may call ----
 const VIEWS = {
   'ref.view::Text': ['v/ref-text.js', ['ref']],
@@ -132,6 +162,8 @@ function makeHost(ops, extra = {}) {
   return {
     h, kit: { RefChip: refChip, SlotFrame: slotFrame, state: answerState }, device: device(),
     call(op, req) { return ops.includes(op) ? get(op, req) : Promise.resolve({ status: 403, ok: false, data: { error: op + ' is not this view\'s op' } }); },
+    // parts(op, req, onPart): the same op, its answer painted as it grows (an op that streams: search)
+    parts(op, req, onPart) { return ops.includes(op) ? getParts(op, req, onPart) : Promise.resolve({ status: 403, ok: false, data: { error: op + ' is not this view\'s op' } }); },
     watch(op, req, onDelta, every = 15000) {
       let stop = false, t = 0;
       const run = async () => { if (stop) return; const r = await this.call(op, req); if (!stop) { onDelta(r); t = setTimeout(run, every); } };

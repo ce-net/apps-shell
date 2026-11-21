@@ -275,6 +275,92 @@ pub fn first_unique<T>(rows: Vec<T>, n: usize, key: impl Fn(&T) -> String) -> Ve
     rows.into_iter().filter(|r| seen.insert(key(r))).take(n).collect()
 }
 
+/// What one search row is, across the Search tab's groups (section 8 fix 1 and 3 of repo:ce
+/// docs/SPEED-AND-SEARCH-2026-11-21.md): a file by its repo and path wherever it was found (`~/dev/<repo>/..`,
+/// search.hybrid's `<repo>/..`, docs.index's `content/docs.index/<machine>/<repo>/..`), a cell by its api, a record by
+/// where it opens; anything else by group, title and path.
+pub fn thing_of(row: &serde_json::Value) -> String {
+    let s = |k: &str| row[k].as_str().unwrap_or("").to_string();
+    let (kind, source, path, title, open) = (s("kind"), s("source"), s("path"), s("title"), s("open"));
+    if kind == "cell" || source == "cells" || source == "cell.search" {
+        let api = title.split([' ', '\u{b7}']).next().unwrap_or("").trim().to_string();
+        let api = path.strip_prefix("cells/").map(str::to_string).filter(|_| source == "cells").unwrap_or(api);
+        return format!("cell:{api}");
+    }
+    if open.starts_with("/search/?rec=") {
+        return open;
+    }
+    let p = path.trim_start_matches("~/dev/").trim_start_matches("dev/");
+    let p = match p.strip_prefix("content/docs.index/").and_then(|r| r.split_once('/')) {
+        Some((_, r)) => r,
+        None => p,
+    };
+    if source == "files" || source == "content" || kind == "doc" || kind == "repo" || source.contains("files") || source.contains("docs") {
+        return format!("doc:{}", p.trim_end_matches('/'));
+    }
+    format!("{source}:{p}:{title}")
+}
+
+/// The words of a query that can name something: three letters or more, not a common word.
+pub fn name_words(q: &str) -> Vec<String> {
+    const COMMON: &[&str] = &["the", "and", "for", "with", "from", "what", "who", "how", "where", "when", "which", "that", "this", "cell", "cells", "doc", "docs", "file", "files", "one", "all", "about", "show", "find", "get", "new"];
+    q.split(|c: char| !c.is_alphanumeric()).map(str::to_lowercase).filter(|w| w.chars().count() >= 3 && !COMMON.contains(&w.as_str())).collect()
+}
+
+/// True when a query word is one of the words of `name` (a person's name, a cell's api or title): the CRM and Cells
+/// groups show a row only then, or when its score clears their floor (section 8 fix 2).
+pub fn covers_name(words: &[String], name: &str) -> bool {
+    let toks: Vec<String> = name.split(|c: char| !c.is_alphanumeric()).map(str::to_lowercase).filter(|t| !t.is_empty()).collect();
+    words.iter().any(|w| toks.iter().any(|t| t == w || (w.len() >= 5 && t.len() >= 5 && (t.starts_with(w.as_str()) || w.starts_with(t.as_str())))))
+}
+
+/// One ranked list over the groups ("Best", section 8 fix 1): reciprocal rank fusion (k = 10) by each row's place in
+/// its own group, never by its score (the groups score on five scales), each group weighted; one row per thing
+/// (`thing_of`), the row of the group that ranked it best, with `group` naming every group it came from.
+pub fn best_of(groups: &[(&str, f32, &[serde_json::Value])], n: usize) -> Vec<serde_json::Value> {
+    let mut at: BTreeMap<String, (f32, usize, usize, Vec<String>)> = BTreeMap::new(); // thing -> (score, best place, order, groups)
+    let mut rows: Vec<serde_json::Value> = vec![];
+    for (g, w, list) in groups {
+        for (i, r) in list.iter().enumerate() {
+            let t = thing_of(r);
+            let add = w / (10.0 + i as f32 + 1.0);
+            match at.get_mut(&t) {
+                Some(e) => {
+                    e.0 += add;
+                    if !e.3.iter().any(|x| x == g) {
+                        e.3.push(g.to_string());
+                    }
+                    if i < e.1 {
+                        e.1 = i;
+                        rows[e.2] = r.clone();
+                    }
+                }
+                None => {
+                    at.insert(t, (add, i, rows.len(), vec![g.to_string()]));
+                    rows.push(r.clone());
+                }
+            }
+        }
+    }
+    let mut v: Vec<(f32, usize, Vec<String>)> = at.into_values().map(|(s, _, o, g)| (s, o, g)).collect();
+    // ties by first seen (group order, then place), so the same answers give the same list
+    v.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    v.into_iter()
+        .take(n)
+        .map(|(s, o, g)| {
+            let mut r = rows[o].clone();
+            r["group"] = serde_json::json!(g);
+            r["fused"] = serde_json::json!((s * 1000.0).round() / 1000.0);
+            r
+        })
+        .collect()
+}
+
+/// A Public row that is a paper (paper.feed): papers have their own group, out of Public and Best (section 8 fix 7).
+pub fn is_paper(row: &serde_json::Value) -> bool {
+    row["path"].as_str().is_some_and(|p| p.starts_with("paper.feed/"))
+}
+
 fn name_ok(s: &str) -> bool {
     !s.is_empty() && !s.starts_with('.') && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
 }
@@ -566,4 +652,41 @@ pub fn due_soon(dues: &[(u64, bool)], now_ms: u64, ahead_ms: u64) -> Vec<(usize,
     let mut v: Vec<(usize, u64, bool)> = dues.iter().enumerate().filter(|(_, (d, open))| *open && *d > 0 && *d <= now_ms + ahead_ms).map(|(i, (d, _))| (i, *d, *d < now_ms)).collect();
     v.sort_by_key(|(_, d, _)| *d);
     v.into_iter().map(|(i, _, o)| (i, o)).collect()
+}
+
+#[cfg(test)]
+mod best_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn one_file_found_by_two_groups_is_one_best_row_first() {
+        let private = vec![
+            json!({"title": "gate.py", "path": "ce-fleet/door/gate.py", "source": "files"}),
+            json!({"title": "Gate deploy", "path": "content/docs.index/foreman-ops-1/ce-fleet/docs/GATE-DEPLOY.md", "source": "content"}),
+        ];
+        let network = vec![json!({"title": "GATE-DEPLOY.md", "path": "~/dev/ce-fleet/docs/GATE-DEPLOY.md", "source": "docs", "kind": "doc"})];
+        let cells = vec![json!({"title": "paypal.payment", "path": "paypal-payment", "source": "cell.search", "kind": "cell"})];
+        let b = best_of(&[("private", 1.0, &private), ("network", 1.0, &network), ("cells", 0.8, &cells)], 10);
+        assert_eq!(b.len(), 3);
+        assert_eq!(b[0]["title"], "GATE-DEPLOY.md", "in two groups beats first in one: {b:?}");
+        assert_eq!(b[0]["group"], json!(["private", "network"]));
+        assert_eq!(b[1]["title"], "gate.py");
+        // the same answers, the same list
+        assert_eq!(b, best_of(&[("private", 1.0, &private), ("network", 1.0, &network), ("cells", 0.8, &cells)], 10));
+    }
+
+    #[test]
+    fn crm_and_cells_floors_rest_on_a_named_word() {
+        let w = name_words("gate deploy canary");
+        assert!(!covers_name(&w, "Person: Kelly Chan, (AI services, HK)"));
+        assert!(!covers_name(&w, "paypal.payment"));
+        assert!(covers_name(&name_words("Vivi"), "Person: Vivi Wang"));
+        assert!(covers_name(&name_words("send a mail"), "mail.send"));
+        assert!(!covers_name(&name_words("send a mail"), "nest.outer"));
+        assert!(covers_name(&name_words("screenshot of a page"), "page.shot · screenshot of a page") );
+        assert_eq!(thing_of(&json!({"title": "search.hybrid cell", "path": "cells/search.hybrid", "source": "cells"})), "cell:search.hybrid");
+        assert_eq!(thing_of(&json!({"title": "search.hybrid · BM25", "source": "cell.search", "kind": "cell"})), "cell:search.hybrid");
+        assert!(is_paper(&json!({"path": "paper.feed/arxiv:2610.22667"})));
+    }
 }

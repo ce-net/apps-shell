@@ -36,11 +36,11 @@ export function mount(root, host) {
   const REC = { person: 'CRM person', promise: 'promise', call: 'call', meet: 'transcript' };
   const recKind = x => (x.open || '').startsWith('/search/?rec=') ? (x.open.slice(13).split(':')[0]) : '';
   const title = x => x.title || x.path;
-  const row = x => h('div', { class: 'row hit' },
+  const row = x => h('div', { class: 'row hit' + (x.group ? ' best' : '') },
     h('div', {},
       h('div', { class: 'l' }, refOf(x) ? host.ref.show(refOf(x), { title: title(x) }) : x.open && x.open.startsWith('/') ? h('a', { href: x.open }, title(x)) : title(x)),
       x.snippet ? h('div', { class: 'snip' }, x.snippet.slice(0, 260)) : null,
-      h('div', { class: 'm' }, [x.path, x.also && x.also.length ? 'also on ' + x.also.join(', ') : '', x.trust ? x.trust.join(', ') : ''].filter(Boolean).join(' · '))),
+      h('div', { class: 'm' }, [x.path, x.also && x.also.length ? 'also on ' + x.also.join(', ') : '', x.trust ? x.trust.join(', ') : '', x.group ? 'in ' + x.group.join(', ') : ''].filter(Boolean).join(' · '))),
     h('div', { class: 'r on' }, h('span', { class: 'tag' + (recKind(x) ? ' crm' : '') }, REC[recKind(x)] || x.kind || x.source || x.from), x.machine ? h('span', { class: 'tag acc' }, x.machine) : null));
   const group = (title, rows, empty, extra) => h('div', { class: 'glass list sys' },
     h('h2', {}, h('b', {}, title), h('span', {}, rows.length + ' hit' + (rows.length === 1 ? '' : 's'))),
@@ -60,19 +60,24 @@ export function mount(root, host) {
     const hy = d.notes.find(n => n.cell === 'search.hybrid') || {}, me = d.notes.find(n => n.cell === 'search.mesh') || {}, cs = d.notes.find(n => n.cell === 'cell.search') || {};
     const cells = d.cells || [], crm = d.crm || [];
     const cr = d.notes.find(n => n.cell === 'search.hybrid' && n.ask === 'crm') || {};
-    const down = d.notes.filter(n => !n.ok && n.err !== 'not open to you');
+    const down = d.notes.filter(n => !n.ok && !n.pending && n.err !== 'not open to you');
+    const waiting = d.notes.filter(n => n.pending).map(n => n.ask || n.cell);
+    const best = d.best || [], convs = d.conversations || [], papers = d.papers || [];
     out.replaceChildren(
       h('div', { class: 'stats' },
         stat('Private', d.private.length + crm.length, hy.ok ? 'from search.hybrid in ' + hy.took_ms + ' ms' : 'search.hybrid: ' + (hy.err || 'no answer'), hy.ok ? 'g' : 'r', true),
         stat('Network', d.network.length + cells.length, me.ok ? me.answered + ' of ' + me.asked + ' machines answered' + (cs.ok ? ', ' + cells.length + ' cells' : '') : me.err === 'not open to you' ? 'not open to you' : 'search.mesh: ' + (me.err || 'no answer'), me.ok && me.answered === me.asked ? 'g' : 'r', false),
         stat('Public', d.public.length, 'published by cells for everyone', null, false)),
+      show === 'all' && best.length ? group('Best', best, '', h('div', { class: 'm sub' }, 'One list over every group below, by each row\'s place in its own group.')) : null,
+      (show === 'all' || show === 'private') && convs.length ? group('Private · conversations', convs, '', h('div', { class: 'm sub' }, 'Conversations ai.session lists for you whose title, folder or id hold the words.')) : null,
       (show === 'all' || show === 'private') && (crm.length || cr.ok) ? group('Private · CRM and calls', crm, 'No CRM person, call, promise or call transcript matches.', h('div', { class: 'm sub' }, 'People, calls and promises from the CRM cells, and what was said in recorded calls. Each opens its record.')) : null,
       show === 'all' || show === 'private' ? group('Private', d.private, 'Nothing private matches, or nothing private is open to you.') : null,
       show === 'all' || show === 'network' ? group('Network', d.network, me.ok ? 'Nothing on the machines\' own indexes matches.' : 'The network search is not open to you or did not answer.', nodes(me)) : null,
       (show === 'all' || show === 'network') && (cells.length || cs.ok) ? group('Network · cells', cells, 'No cell matches.', h('div', { class: 'm sub' }, cs.ok ? 'cell.search: ' + cs.indexed + ' cells you may see, ranked by meaning and text, each with who signed it and its review' : '')) : null,
       show === 'all' || show === 'public' ? group('Public', d.public, 'Nothing published matches.') : null,
+      (show === 'all' || show === 'public') && papers.length ? group('Public · papers', papers, '') : null,
       down.length ? h('p', { class: 'note' }, down.map(n => n.cell + ' did not answer: ' + n.err).join(' · ')) : null,
-      h('p', { class: 'note' }, 'Answered in ' + d.took_ms + ' ms.'));
+      h('p', { class: 'note' }, d.partial ? 'First rows in ' + d.took_ms + ' ms; still asking ' + waiting.join(', ') + '.' : 'Answered in ' + d.took_ms + ' ms.'));
   }
 
   async function go() {
@@ -83,7 +88,9 @@ export function mount(root, host) {
     if (!q) { last = null; draw(); return; }
     const my = ++seq;
     out.replaceChildren(h('p', { class: 'note' }, 'Searching every source.'));
-    const r = await host.call('search', { q });
+    // each group is painted as its ask comes back (S5 of repo:ce docs/SPEED-AND-SEARCH-2026-11-21.md)
+    const onPart = d => { if (stop || my !== seq) return; last = d; draw(); };
+    const r = host.parts ? await host.parts('search', { q }, onPart) : await host.call('search', { q });
     const d = r.ok ? r.data : { error: r.status === 403 ? 'Search is not open to you.' : r.timeout ? 'Search did not answer in 25 s; try again.' : 'Search did not answer (' + r.status + '); try again.' };
     if (stop || my !== seq) return;
     last = d; draw();

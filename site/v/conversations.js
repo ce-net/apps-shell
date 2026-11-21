@@ -104,5 +104,8 @@ export function mount(root, host) {
   };
   const list = mountList(left, host, { onOpen: show, onOpened: openId });
   stopThread = mountThread(centre, host, null, {});
+  // /conversations/?c=<id> (a Search row) opens that conversation, read as the viewer like any row of the list
+  const c0 = new URLSearchParams(location.search).get('c');
+  if (c0 && /^[A-Za-z0-9._-]{1,128}$/.test(c0)) openId(c0);
   return () => { gone = true; stopStrip(); list.stop(); stopThread(); };
 }

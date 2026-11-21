@@ -1153,13 +1153,71 @@ fn node_name() -> String {
     std::fs::read_to_string("/etc/hostname").unwrap_or_default().trim().to_string()
 }
 
+/// One ask of the Search tab, once it is back: its answer, why it failed, or that it was not asked.
+enum Ask<T> {
+    Pending,
+    Skip,
+    Late(u64),
+    Err(String),
+    Ok(T),
+}
+
+impl<T> Ask<T> {
+    fn of(r: Result<Result<T, String>, tokio::time::error::Elapsed>, s: u64) -> Ask<T> {
+        match r {
+            Ok(Ok(v)) => Ask::Ok(v),
+            Ok(Err(e)) => Ask::Err(e),
+            Err(_) => Ask::Late(s),
+        }
+    }
+    fn of_opt(r: Result<Option<Result<T, String>>, tokio::time::error::Elapsed>, s: u64) -> Ask<T> {
+        match r {
+            Ok(None) => Ask::Skip,
+            Ok(Some(x)) => Ask::of(Ok(x), s),
+            Err(_) => Ask::Late(s),
+        }
+    }
+    fn pending(&self) -> bool {
+        matches!(self, Ask::Pending)
+    }
+}
+
+/// The asks of one search as they come back.
+struct Asks {
+    h: Ask<hybrid_api::FindResp>,
+    p: Ask<hybrid_api::FindResp>,
+    m: Ask<mesh_api::MeshResp>,
+    cs: Ask<cell_search_api::SearchResp>,
+    cr: Ask<hybrid_api::FindResp>,
+    cv: Ask<ai_session_api::Listed>,
+}
+
+/// The note a failed or waiting ask leaves (`pending`: still asking; the page says so and waits for the next part).
+fn ask_note<T>(a: &Ask<T>, cell: &str, ask: Option<&str>) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let mut n = match a {
+        Ask::Ok(_) | Ask::Skip => return None,
+        Ask::Pending => json!({"cell": cell, "ok": false, "pending": true, "err": "asking"}),
+        Ask::Late(s) => json!({"cell": cell, "ok": false, "err": format!("no answer in {s} s")}),
+        Ask::Err(e) => json!({"cell": cell, "ok": false, "err": e.chars().take(200).collect::<String>()}),
+    };
+    if let Some(x) = ask {
+        n["ask"] = json!(x);
+    }
+    Some(n)
+}
+
 /// One search over both: search.hybrid as the viewer (their exact private reads ride in the minted grant) and
 /// search.mesh's merged answer from every node, at once. A side that fails is named in `notes`, never the whole answer.
 /// search.mesh is asked only for a viewer holding `search.mesh:find`: its nodes index internal repos and docs.
 /// Each group keeps its own `k` (Private, Network, Public): for a viewer with private reads search.hybrid is asked
 /// twice, once as them and once with `search.hybrid:find` alone (public only), so their private hits never fill Public.
-async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_json::Value {
-    use serde_json::json;
+/// Conversations: ai.session `List` with the words, as the viewer (its own rights decide which rows exist).
+///
+/// `parts`: each time an ask comes back the answer so far is sent there (S5 of repo:ce
+/// docs/SPEED-AND-SEARCH-2026-11-21.md: the page showed nothing until the slowest of five asks was back); the last
+/// answer is returned whole as before.
+async fn search(person: &str, abilities: &[String], q: &str, k: u32, parts: Option<&tokio::sync::mpsc::UnboundedSender<serde_json::Value>>) -> serde_json::Value {
     let t0 = Instant::now();
     let find = |ab: Vec<String>, k: u32, sources: Vec<String>| {
         let q = q.to_string();
@@ -1202,68 +1260,117 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
         let r = c.call::<cell_search_api::Search>(&cell_search_api::SearchReq { q: q.into(), k }).await.map_err(|e| e.to_string())?;
         r.map_err(|e| format!("{e:?}"))
     };
-    let (h, p, m, cs, cr) = tokio::join!(
+    // conversations whose title, folder or id hold the words, only those ai.session lists for this viewer
+    let conv = async {
+        let Some(ab) = for_cell(abilities, "ai.session", "ai.session:list") else { return None };
+        Some(async {
+            let c = client::<ai_session_api::AiSession>(person, &ab).await?;
+            let req = ai_session_api::ListReq { provider: None, account: None, node: None, kind: None, source: None, parent: None, q: Some(q.to_string()), limit: 5 };
+            c.call::<ai_session_api::List>(&req).await.map_err(|e| e.to_string())?.map_err(|e| format!("{e:?}"))
+        }.await)
+    };
+    let (hf, pf, mf, csf, crf, cvf) = (
         tokio::time::timeout(Duration::from_secs(22), hybrid),
         tokio::time::timeout(Duration::from_secs(22), public_ask),
         tokio::time::timeout(Duration::from_secs(12), mesh),
         tokio::time::timeout(Duration::from_secs(12), cellq),
-        tokio::time::timeout(Duration::from_secs(22), crm_ask)
+        tokio::time::timeout(Duration::from_secs(22), crm_ask),
+        tokio::time::timeout(Duration::from_secs(8), conv),
     );
-    let (mut private, mut network, mut public, mut notes, mut cells, mut crm) = (vec![], vec![], vec![], vec![], vec![], vec![]);
+    tokio::pin!(hf, pf, mf, csf, crf, cvf);
+    let mut a = Asks { h: Ask::Pending, p: Ask::Pending, m: Ask::Pending, cs: Ask::Pending, cr: Ask::Pending, cv: Ask::Pending };
+    loop {
+        let part = tokio::select! {
+            x = &mut hf, if a.h.pending() => { a.h = Ask::of(x, 22); "private" }
+            x = &mut pf, if a.p.pending() => { a.p = Ask::of_opt(x, 22); "public" }
+            x = &mut mf, if a.m.pending() => { a.m = Ask::of(x, 12); "network" }
+            x = &mut csf, if a.cs.pending() => { a.cs = Ask::of(x, 12); "cells" }
+            x = &mut crf, if a.cr.pending() => { a.cr = Ask::of_opt(x, 22); "crm" }
+            x = &mut cvf, if a.cv.pending() => { a.cv = Ask::of_opt(x, 8); "conversations" }
+        };
+        let done = !(a.h.pending() || a.p.pending() || a.m.pending() || a.cs.pending() || a.cr.pending() || a.cv.pending());
+        if done {
+            return assemble(q, k, &a, t0).await;
+        }
+        if let Some(tx) = parts {
+            // a part only when it changes what the page shows (a skipped ask adds nothing)
+            let skipped = match part {
+                "public" => matches!(a.p, Ask::Skip),
+                "crm" => matches!(a.cr, Ask::Skip),
+                "conversations" => matches!(a.cv, Ask::Skip),
+                _ => false,
+            };
+            if !skipped {
+                let mut v = assemble(q, k, &a, t0).await;
+                v["part"] = serde_json::json!(part);
+                v["partial"] = serde_json::json!(true);
+                if tx.send(v).is_err() {
+                    return serde_json::json!({});
+                }
+            }
+        }
+    }
+}
+
+/// The answer from the asks back so far: the groups, the fused Best list, the notes (a waiting ask says `pending`).
+async fn assemble(q: &str, k: u32, a: &Asks, t0: Instant) -> serde_json::Value {
+    use serde_json::json;
+    let (mut private, mut network, mut public, mut notes, mut cells, mut crm, mut convs) = (vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
     let hrow = |x: &hybrid_api::Hit| {
-        json!({"title": x.title, "snippet": x.snippet, "source": x.source, "machine": x.machine, "path": x.path,
+        // a thing on several machines is one row (search.hybrid folds them): the first is where it opens
+        let ms: Vec<&str> = x.machine.split(',').filter(|m| !m.is_empty()).collect();
+        let machine = if ms.len() > 2 { format!("{} +{}", ms[0], ms.len() - 1) } else { x.machine.replace(',', ", ") };
+        json!({"title": x.title, "snippet": x.snippet, "source": x.source, "machine": machine, "path": x.path,
+            "also": if ms.len() > 2 { json!(ms[1..].to_vec()) } else { json!([]) },
             "score": x.score, "open": open_of(&x.source, "", &x.path, ""), "from": "search.hybrid"})
     };
-    match h {
-        Ok(Ok(r)) => {
+    match &a.h {
+        Ask::Ok(r) => {
             notes.push(json!({"cell": "search.hybrid", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64, "reranked": r.reranked}));
             for x in &r.hits {
                 if group_of(&x.acl) == "public" { public.push(hrow(x)) } else { private.push(hrow(x)) }
             }
         }
-        Ok(Err(e)) => notes.push(json!({"cell": "search.hybrid", "ok": false, "err": e.chars().take(200).collect::<String>()})),
-        Err(_) => notes.push(json!({"cell": "search.hybrid", "ok": false, "err": "no answer in 22 s"})),
+        other => notes.extend(ask_note(other, "search.hybrid", None)),
     }
-    match p {
-        Ok(None) => {}
-        Ok(Some(Ok(r))) => {
+    match &a.p {
+        Ask::Ok(r) => {
             notes.push(json!({"cell": "search.hybrid", "ask": "public", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64}));
             // the public-only answer first: it is ranked among public hits alone
             let mut both: Vec<serde_json::Value> = r.hits.iter().filter(|x| group_of(&x.acl) == "public").map(hrow).collect();
             both.append(&mut public);
             public = both;
         }
-        Ok(Some(Err(e))) => notes.push(json!({"cell": "search.hybrid", "ask": "public", "ok": false, "err": e.chars().take(200).collect::<String>()})),
-        Err(_) => notes.push(json!({"cell": "search.hybrid", "ask": "public", "ok": false, "err": "no answer in 22 s"})),
+        other => notes.extend(ask_note(other, "search.hybrid", Some("public"))),
     }
-    match m {
-        Ok(Ok(r)) => {
+    match &a.m {
+        Ask::Ok(r) => {
             notes.push(json!({"cell": "search.mesh", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64, "answered": r.answered, "asked": r.asked,
                 "nodes": r.nodes.iter().map(|n| json!({"node": n.node, "ok": n.ok, "hits": n.hits, "took_ms": n.took_ms as u64, "err": n.err.chars().take(120).collect::<String>()})).collect::<Vec<_>>()}));
-            for x in r.hits {
+            for x in &r.hits {
                 let first = x.locations.first();
                 let (machine, path) = first.map(|l| (l.node.clone(), l.path.clone())).unwrap_or_default();
-                network.push(json!({"title": x.title, "snippet": x.snippet, "source": x.sources.join(", "), "kind": x.kind, "machine": machine, "path": path,
+                let row = json!({"title": x.title, "snippet": x.snippet, "source": x.sources.join(", "), "kind": x.kind, "machine": machine, "path": path,
                     "also": x.locations.iter().skip(1).map(|l| l.node.clone()).collect::<Vec<_>>(), "score": x.score,
-                    "open": open_of("", &x.kind, &path, &x.key), "origin": if x.kind == "repo" { origin_of(&x.key) } else { None }, "from": "search.mesh"}));
+                    "open": open_of("", &x.kind, &path, &x.key), "origin": if x.kind == "repo" { origin_of(&x.key) } else { None }, "from": "search.mesh"});
+                // every cell of the mesh (search.mesh's registry and cells sources) joins the Cells group
+                if x.kind == "cell" { cells.push(row) } else { network.push(row) }
             }
         }
-        Ok(Err(e)) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": e.chars().take(200).collect::<String>()})),
-        Err(_) => notes.push(json!({"cell": "search.mesh", "ok": false, "err": "no answer in 12 s"})),
+        other => notes.extend(ask_note(other, "search.mesh", None)),
     }
-    match cr {
-        Ok(None) => {}
-        Ok(Some(Ok(r))) => {
+    match &a.cr {
+        Ask::Ok(r) => {
             notes.push(json!({"cell": "search.hybrid", "ask": "crm", "ok": true, "hits": r.hits.len(), "took_ms": r.took_ms as u64}));
             crm = r.hits.iter().filter(|x| group_of(&x.acl) == "private").map(hrow).collect();
         }
-        Ok(Some(Err(e))) => notes.push(json!({"cell": "search.hybrid", "ask": "crm", "ok": false, "err": e.chars().take(200).collect::<String>()})),
-        Err(_) => notes.push(json!({"cell": "search.hybrid", "ask": "crm", "ok": false, "err": "no answer in 22 s"})),
+        other => notes.extend(ask_note(other, "search.hybrid", Some("crm"))),
     }
-    match cs {
-        Ok(Ok(r)) => {
+    let mut cell_rows = vec![];
+    match &a.cs {
+        Ask::Ok(r) => {
             notes.push(json!({"cell": "cell.search", "ok": true, "hits": r.hits.len(), "took_ms": r.took_us / 1000, "indexed": r.indexed}));
-            for x in r.hits.into_iter().take(k as usize) {
+            for x in r.hits.iter().take(k as usize) {
                 let t = &x.trust;
                 let mut trust = vec![if t.signer == "ours" { "signed by ce-net".to_string() } else { format!("{} signer", t.signer) }];
                 if !t.review.is_empty() {
@@ -1273,14 +1380,24 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
                     trust.push(format!("{} advisories", t.advisories.len()));
                 }
                 let ops: Vec<&str> = x.ops.iter().map(|o| o.name.as_str()).filter(|n| *n != "HealthOp").take(6).collect();
-                cells.push(json!({"title": if x.title.is_empty() || x.title == x.api { x.api.clone() } else { format!("{} · {}", x.api, x.title) },
+                cell_rows.push(json!({"title": if x.title.is_empty() || x.title == x.api { x.api.clone() } else { format!("{} · {}", x.api, x.title) },
                     "snippet": x.about, "source": "cell.search", "kind": "cell", "machine": format!("running on {}", x.running_on),
                     "path": format!("{}{}", x.repo, if ops.is_empty() { String::new() } else { format!(" · ops {}", ops.join(", ")) }),
-                    "trust": trust, "score": x.score, "open": open_of("cells", "cell", "", &x.api), "from": "cell.search"}));
+                    "trust": trust, "score": x.score, "open": open_of("cells", "cell", "", &x.api), "from": "cell.search", "api": x.api}));
             }
         }
-        Ok(Err(e)) => notes.push(json!({"cell": "cell.search", "ok": false, "err": e.chars().take(200).collect::<String>()})),
-        Err(_) => notes.push(json!({"cell": "cell.search", "ok": false, "err": "no answer in 12 s"})),
+        other => notes.extend(ask_note(other, "cell.search", None)),
+    }
+    match &a.cv {
+        Ask::Ok(r) => {
+            notes.push(json!({"cell": "ai.session", "ok": true, "hits": r.conversations.len(), "total": r.total}));
+            for c in &r.conversations {
+                let title = if c.title.is_empty() { format!("{} conversation", c.provider) } else { c.title.clone() };
+                convs.push(json!({"title": title, "snippet": format!("{} turns · {}", c.turns, c.cwd), "source": "ai.session", "kind": "conversation",
+                    "machine": c.node, "path": format!("conv:{}", c.id), "open": format!("/conversations/?c={}", c.id), "from": "ai.session", "score": 0.0}));
+            }
+        }
+        other => notes.extend(ask_note(other, "ai.session", None)),
     }
     let key = |v: &serde_json::Value| format!("{}\n{}\n{}", v["path"], v["title"], v["machine"]);
     let n = k as usize;
@@ -1288,10 +1405,64 @@ async fn search(person: &str, abilities: &[String], q: &str, k: u32) -> serde_js
     let crm = first_unique(crm, n, |v| v["open"].as_str().map(String::from).unwrap_or_else(|| key(v)));
     let in_crm: std::collections::BTreeSet<String> = crm.iter().map(key).collect();
     let private: Vec<serde_json::Value> = private.into_iter().filter(|v| !in_crm.contains(&key(v))).collect();
-    let (mut private, mut network, mut public, mut crm) = (first_unique(private, n, key), first_unique(network, n, key), first_unique(public, n, key), crm);
-    pin_links(&mut [&mut private, &mut network, &mut public, &mut crm]).await;
-    json!({"q": q, "per_group": k, "private": private, "network": network, "cells": cells, "crm": crm, "public": public,
+    // floors (section 8 fix 2): a CRM row only when a query word is in its name or its score clears 0.6; a cell only
+    // when a query word is in its api or title, or its score clears 0.8 (cell.search scored paypal.payment 0.75 for
+    // "gate deploy canary" by its ops' words)
+    let words = name_words(q);
+    let crm: Vec<serde_json::Value> = crm.into_iter().filter(|v| covers_name(&words, v["title"].as_str().unwrap_or("")) || v["score"].as_f64().unwrap_or(0.0) >= 0.6).collect();
+    let mut all_cells: Vec<serde_json::Value> = cell_rows.into_iter().chain(cells).collect();
+    all_cells.retain(|v| covers_name(&words, v["title"].as_str().unwrap_or("")) || v["score"].as_f64().unwrap_or(0.0) >= 0.8);
+    let cells = first_unique(all_cells, n, thing_of);
+    // papers in their own group (section 8 fix 7): "VIPER-seq" is not what "Vivi" asks for
+    let (papers, public): (Vec<serde_json::Value>, Vec<serde_json::Value>) = public.into_iter().partition(is_paper);
+    let (mut private, mut network, mut public, mut crm, mut papers) = (first_unique(private, n, key), first_unique(network, n, key), first_unique(public, n, key), crm, first_unique(papers, 5, key));
+    let mut convs = convs;
+    pin_links(&mut [&mut private, &mut network, &mut public, &mut crm, &mut papers, &mut convs]).await;
+    let best = best_of(&[("private", 1.0, &private), ("crm", 1.0, &crm), ("conversations", 1.0, &convs), ("network", 1.0, &network), ("cells", 0.8, &cells), ("public", 0.6, &public)], n);
+    json!({"q": q, "per_group": k, "best": best, "private": private, "network": network, "cells": cells, "crm": crm, "conversations": convs, "public": public, "papers": papers,
         "notes": notes, "took_ms": t0.elapsed().as_millis() as u64})
+}
+
+/// `GET /api/search?q=&stream=1`: the same answer as `/api/search`, as JSON lines: one line each time an ask comes back
+/// (the answer so far, `"partial": true`, `"part"` naming the group), then the whole answer (`"part": "done"`). Same
+/// asks as the same viewer; the connection closes after the last line.
+async fn search_stream(s: &mut TcpStream, person: &str, abilities: &[String], q: &str, k: u32) {
+    use tokio::io::AsyncWriteExt;
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\nX-Accel-Buffering: no\r\nX-Content-Type-Options: nosniff\r\nVary: X-Ce-Person\r\nConnection: close\r\n\r\n";
+    if s.write_all(head.as_bytes()).await.is_err() {
+        return;
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let work = async {
+        let mut v = search(person, abilities, q, k, Some(&tx)).await;
+        v["part"] = serde_json::json!("done");
+        drop(tx);
+        v
+    };
+    tokio::pin!(work);
+    let mut done: Option<serde_json::Value> = None;
+    loop {
+        tokio::select! {
+            v = &mut work, if done.is_none() => { done = Some(v); }
+            m = rx.recv() => match m {
+                Some(v) => {
+                    let mut line = serde_json::to_vec(&v).unwrap_or_default();
+                    line.push(b'\n');
+                    if s.write_all(&line).await.is_err() { return; }
+                    let _ = s.flush().await;
+                }
+                None => break,
+            }
+        }
+    }
+    let v = match done {
+        Some(v) => v,
+        None => work.await,
+    };
+    let mut line = serde_json::to_vec(&v).unwrap_or_default();
+    line.push(b'\n');
+    let _ = s.write_all(&line).await;
+    let _ = s.flush().await;
 }
 
 /// Every viewer link (`/search/?ref=repo:<repo>/<path>`) pinned to what the viewer can open: ref.pin reads a repo
@@ -1969,7 +2140,7 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
                 return ("400 Bad Request", b"{\"error\":\"q: 1 to 300 characters\"}".to_vec());
             }
             let k = query(path, "k").and_then(|k| k.parse().ok()).unwrap_or(PER_GROUP).clamp(1, 50);
-            ("200 OK", json(&search(person, abilities, q, k).await))
+            ("200 OK", json(&search(person, abilities, q, k, None).await))
         }
         "/api/rec" if has("/search/") || (!mine.is_empty() && covers(abilities, "open.with:use")) => {
             let r = query_text(path, "r").unwrap_or_default();
@@ -2470,6 +2641,18 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         }
         return conv_events(&mut s, &person, &ab, &path).await;
     }
+    if route == "/api/search" && query(&path, "stream").as_deref() == Some("1") && {
+        let live = f.live.read().await.clone();
+        tabs_for(&ab, &live, ui_chain::now_ms()).iter().any(|t| t.route == "/search/")
+    } {
+        let q = query_text(&path, "q").unwrap_or_default();
+        let q = q.trim();
+        if q.is_empty() || q.chars().count() > 300 {
+            return reply(&mut s, "400 Bad Request", "application/json", b"{\"error\":\"q: 1 to 300 characters\"}", false).await;
+        }
+        let k = query(&path, "k").and_then(|k| k.parse().ok()).unwrap_or(PER_GROUP).clamp(1, 50);
+        return search_stream(&mut s, &person, &ab, q, k).await;
+    }
     if route.starts_with("/api/") {
         let (st, body) = api(&f, &person, &route, &path, &ab).await;
         return reply(&mut s, st, "application/json", &body, is_head).await;
@@ -2668,5 +2851,34 @@ mod contracts {
     #[test]
     fn apps_shell_schema_is_unchanged() {
         assert_eq!(format!("{:016x}", <apps_shell_api::AppsShell as ce_wire::Api>::SCHEMA), APPS_SHELL);
+    }
+}
+
+#[cfg(test)]
+mod search_parts {
+    use super::*;
+
+    fn hit(path: &str, acl: &str, machine: &str) -> hybrid_api::Hit {
+        hybrid_api::Hit { id: path.into(), source: "files".into(), machine: machine.into(), path: path.into(), title: path.rsplit('/').next().unwrap_or("").into(),
+            snippet: String::new(), score: 0.5, acl: acl.into(), bm25_rank: 1, vec_rank: 1 }
+    }
+
+    /// The first part carries the group that is back and says which asks are still out; Best fuses what is back; a
+    /// paper leaves Public for its own group; a CRM person no query word names is held back by the floor.
+    #[tokio::test]
+    async fn a_part_shows_what_is_back_and_waits_for_the_rest() {
+        let found = hybrid_api::FindResp { hits: vec![hit("no-such-repo-c89c/docs/GATE-DEPLOY.md", "repo:x", "foreman-ops-1,debian,leif-desk,macbook"), hit("paper.feed/arxiv:1", "public", "foreman-ops-1"), hit("cells.catalog/deploy.review", "public", "foreman-ops-1")],
+            took_ms: 12.0, chunks: 3, reranked: false, model: String::new() };
+        let crm = hybrid_api::FindResp { hits: vec![{ let mut h = hit("people/kelly-chan", "people", "foreman-ops-1"); h.title = "Person: Kelly Chan".into(); h.score = 0.23; h }], took_ms: 3.0, chunks: 1, reranked: false, model: String::new() };
+        let a = Asks { h: Ask::Ok(found), p: Ask::Pending, m: Ask::Pending, cs: Ask::Skip, cr: Ask::Ok(crm), cv: Ask::Skip };
+        let v = assemble("gate deploy canary", 10, &a, Instant::now()).await;
+        assert_eq!(v["private"].as_array().unwrap().len(), 1);
+        assert_eq!(v["private"][0]["machine"], "foreman-ops-1 +3", "one row for four machines");
+        assert_eq!(v["papers"].as_array().unwrap().len(), 1);
+        assert_eq!(v["public"].as_array().unwrap().len(), 1);
+        assert!(v["crm"].as_array().unwrap().is_empty(), "Kelly Chan is not what gate deploy canary asks for");
+        assert_eq!(v["best"][0]["path"], "no-such-repo-c89c/docs/GATE-DEPLOY.md");
+        let waiting: Vec<&str> = v["notes"].as_array().unwrap().iter().filter(|n| n["pending"] == true).map(|n| n["cell"].as_str().unwrap()).collect();
+        assert_eq!(waiting, vec!["search.hybrid", "search.mesh"]);
     }
 }
