@@ -396,6 +396,20 @@ fn the_now_and_business_monitor_tabs_follow_their_right_and_shell() {
     assert!(routes(&["person.now:read", "business.view:html"], &live).is_empty());
 }
 
+/// The Code tab (ce-net-net DEVENV, repo:ce docs/LIVE-DEVENV-FINISH-2026-11-21.md): /devenv/ with dev.ws:open while
+/// dev.ws answers; a viewer without the right gets neither the tab nor its name, and a stopped dev.ws takes it away.
+#[test]
+fn the_code_tab_follows_dev_ws_open_and_its_shell() {
+    let now = 1_000_000;
+    let mut live = all_live(now);
+    let routes = |a: &[&str], l: &BTreeMap<String, u64>| tabs_for(&s(a), l, now).into_iter().map(|t| t.route).collect::<Vec<_>>();
+    assert_eq!(routes(&["dev.ws:open"], &live), ["/devenv/"]);
+    assert!(!routes(ROOT, &live).contains(&"/devenv/".to_string()), "the people file gives it, not the default");
+    assert!(routes(&["dev.ws:read"], &live).is_empty());
+    live.insert("dev.ws".into(), now - LIVE_MS - 1);
+    assert!(routes(&["dev.ws:open"], &live).is_empty());
+}
+
 /// Slice 3 from the tab (repo:ce docs/AI-AS-CELLS-2026-11-18.md section 12.1): the relay passes AI_OPS only, each
 /// under the cell's own right; a page opens the Bare harness only with no tool grants, and Send never waits.
 #[test]

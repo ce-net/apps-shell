@@ -76,6 +76,8 @@ pub const GRANT: &[&str] = &[
     // the Now and Business monitor tabs are live while their shells answer
     "person.now:health",
     "business.view:health",
+    // the Code tab (ce-net-net DEVENV) is live while dev.ws answers
+    "dev.ws:health",
     "delegate:1",
 ];
 
