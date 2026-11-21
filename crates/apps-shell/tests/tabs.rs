@@ -368,3 +368,15 @@ fn a_tmux_row_opens_live_through_term_session_as_the_viewer() {
         assert!(!src.contains(bad), "conv-term.js holds {bad}");
     }
 }
+
+/// A session limit written `name*` reaches term.session as a prefix limit, never dropped (a dropped limit is every
+/// session); any other `*` in a term.session ability refuses.
+#[test]
+fn a_starred_session_limit_stays_a_limit() {
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(term_scope(v(&["term.session:read", "term.session:where:session=lane-*"])), Some(v(&["term.session:read", "term.session:where:session-prefix=lane-"])));
+    assert_eq!(term_scope(v(&["term.session:read", "term.session:where:session=lane-a"])), Some(v(&["term.session:read", "term.session:where:session=lane-a"])));
+    assert_eq!(term_scope(v(&["term.session:read", "term.session:where:session=*"])), Some(v(&["term.session:read", "term.session:where:session-prefix="])));
+    assert_eq!(term_scope(v(&["term.session:read", "term.session:where:node=a*"])), None);
+    assert_eq!(term_scope(v(&["term.session:read", "term.session:where:session=a*b*"])), None);
+}

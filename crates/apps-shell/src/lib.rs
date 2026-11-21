@@ -109,6 +109,19 @@ pub fn term_need(op: &str) -> Option<&'static str> {
     TERM_OPS.iter().find(|(o, _)| *o == op).map(|(_, n)| *n)
 }
 
+/// The viewer's term.session abilities as the grant carries them. A viewer grant never holds an ability with a `*`
+/// (it would be dropped, and a dropped session limit widens to every session), so `where:session=<p>*` becomes
+/// `where:session-prefix=<p>`; any other term.session ability holding a `*` refuses the call (None).
+pub fn term_scope(ab: Vec<String>) -> Option<Vec<String>> {
+    ab.into_iter()
+        .map(|a| match a.strip_prefix("term.session:where:session=").and_then(|p| p.strip_suffix('*')) {
+            Some(p) if !p.contains('*') => Some(format!("term.session:where:session-prefix={p}")),
+            _ if a.contains('*') => None,
+            _ => Some(a),
+        })
+        .collect()
+}
+
 /// One request of the terminal relay (JSON in): the node that holds the pane (its `term.session#<node>`), the pane
 /// (`%3` or `session:window.pane`, as a tmux row's native id carries it), and for Keys the text and/or key names.
 #[derive(Debug, Clone, Default, serde::Deserialize)]

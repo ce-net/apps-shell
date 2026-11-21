@@ -2055,7 +2055,7 @@ async fn term_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -
     if let Err(e) = req.check(op) {
         return err("400 Bad Request", e);
     }
-    let Some(mut ab) = for_cell(abilities, "term.session", need) else { return err("403 Forbidden", "refused".into()) };
+    let Some(mut ab) = for_cell(abilities, "term.session", need).and_then(apps_shell::term_scope) else { return err("403 Forbidden", "refused".into()) };
     // the grant is good on the row's node only: a dial that falls back to another node's term.session is refused there
     ab.push(format!("term.session:where:node={}", req.node));
     let g = match viewer(person, &ab).await {
