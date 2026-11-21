@@ -97,7 +97,7 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
     v
 }
 
-/// The ops the Conversations tab's relay passes to ai.session (repo:ce docs/AI-AS-CELLS-2026-11-18.md section 12.1),
+/// The ops the Conversations tab's relay passes to ai.session (repo:ce docs/AI-AS-CELLS-2026-11-18.md sections 12.1, 13.8),
 /// each with the right the viewer must hold, and nothing else: no `Config*`, `Profile*`, `ImportRun` or `Rehome` from
 /// a page. `Events` is the one stream, served as server-sent events (GET); every other op is a POST.
 pub const AI_OPS: &[(&str, &str)] = &[
@@ -112,6 +112,9 @@ pub const AI_OPS: &[(&str, &str)] = &[
     ("Interrupt", "ai.session:send"),
     ("Close", "ai.session:close"),
     ("Ask", "ai.session:ask"),
+    // section 13 (repo:ce docs/AI-AS-CELLS-2026-11-18.md 13.7-13.8): the Nodes block and "Load older"
+    ("Coverage", "ai.session:coverage"),
+    ("ListBefore", "ai.session:list"),
 ];
 
 /// The right `op` of the ai.session relay needs, or None for an op it does not pass.
@@ -123,6 +126,14 @@ pub fn ai_need(op: &str) -> Option<&'static str> {
 /// `Open` and `Ask` run the Bare harness only with no tool grants (a Code harness is a shell on the node: never from a
 /// page); `Send` never waits (the answer comes over Events), with text and ce-ref attachments only.
 pub fn ai_check(op: &str, body: &mut serde_json::Value) -> Result<(), String> {
+    // Coverage takes no request: null (or {}) only
+    if op == "Coverage" {
+        if body.is_null() || body.as_object().is_some_and(|o| o.is_empty()) {
+            *body = serde_json::Value::Null;
+            return Ok(());
+        }
+        return Err("Coverage takes no request".into());
+    }
     let o = body.as_object_mut().ok_or("a JSON object")?;
     // a profile row carries its own harness (a Code one, with shell, is a shell on the node): never from a page
     if matches!(op, "Open" | "Ask") && o.get("profile").is_some_and(|p| !p.is_null()) {

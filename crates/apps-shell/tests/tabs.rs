@@ -427,4 +427,11 @@ fn the_ai_relay_passes_its_table_only_and_checks_each_request() {
     assert!(ai_check("Send", &mut tool).is_err());
     assert!(ai_check("Ask", &mut serde_json::json!({ "text": "  " })).is_err());
     assert!(ai_check("Read", &mut serde_json::json!([])).is_err(), "a JSON object");
+    // section 13: Coverage under its own right (real counts are a disk fact), ListBefore under List's
+    assert_eq!((ai_need("Coverage"), ai_need("ListBefore")), (Some("ai.session:coverage"), Some("ai.session:list")));
+    let mut cov = serde_json::json!({});
+    ai_check("Coverage", &mut cov).unwrap();
+    assert!(cov.is_null(), "Coverage takes no request");
+    assert!(ai_check("Coverage", &mut serde_json::json!({ "node": "x" })).is_err());
+    assert!(ai_check("ListBefore", &mut serde_json::json!({ "list": {}, "before_ms": 1 })).is_ok());
 }

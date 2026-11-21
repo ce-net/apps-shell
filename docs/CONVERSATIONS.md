@@ -107,3 +107,23 @@ docs/slice3-proof/):
   answered kiwi-77 from its own history (09). 390 px: no horizontal scroll (10).
 - t-c89c-reader (list, read): New chat "not open to you", Send 403 (11).
 - curl: Send{wait: true} from a page answered at once (wait forced false); Open with a Code harness 400; ConfigPut 404.
+
+## Section 13: every node in the tab (2026-11-21, foreman/win-c89c; repo:ce docs/AI-AS-CELLS-2026-11-18.md 13.8, design by Fable 5.2)
+
+- **Nodes block** (replaces the totals line for a viewer holding `ai.session:coverage`): `ai.session Coverage` as the
+  viewer, at most once a minute. Summary "Nodes · k need a look" and "N sessions"; opened, one line per node: name,
+  "listed of real" over the sources the node's importer counted, and the age of the last good import. Quiet when the
+  numbers match and the import is fresh; otherwise words and the warn or bad colour (never colour alone): a gap
+  ("7,200 of 7,298"), "rows, not counted, last import 3 d ago", "not answering", "importer refused", "no importer".
+  Each node's sources are chips ("Claude Code 84 of 84", "tmux 10 of 10 live", "DeepSeek lanes 18 of 18"); a node
+  line or a source chip filters the list on the server (`List{node, source}`).
+- A viewer without `ai.session:coverage` (403) sees the old totals line (List with limit 1 per source and node).
+- **Live panes**: `term.session List` on every node Coverage names that runs an importer, plus foreman-ops-1 and
+  leif-desk, not a fixed pair.
+- **Paging**: the footer always says "N of total"; "Load 300 older" calls `ListBefore{list: <same filter>, before_ms:
+  <oldest row shown>}` and appends.
+- Relay: `AI_OPS` adds `Coverage` (`ai.session:coverage`, takes no request: null or {} only) and `ListBefore`
+  (`ai.session:list`). The contract is copied from repo:ai-session e923cd3 (schema 0xaf962657245182c4).
+- Deploy: give Leif `ai.session:coverage` in `~/.config/apps-shell/people.json` (with list and read).
+- Not built: the "Imported from opencode on <node>. Read only." line in the thread, and "no access to terminals" on a
+  node line whose term.session refuses the viewer.

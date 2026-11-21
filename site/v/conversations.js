@@ -26,6 +26,17 @@ const CSS = `
 .cv-chip{border:1px solid var(--line);background:transparent;color:var(--ink-2);border-radius:var(--r-pill);padding:2px var(--s-2);font:inherit;font-size:var(--t-sm);cursor:pointer;min-height:28px}
 .cv-chip[aria-pressed=true]{background:var(--acc-soft);color:var(--acc-ink);border-color:var(--acc)}
 .cv-count{font-family:var(--mono);font-size:var(--t-xs);color:var(--ink-3);display:flex;flex-wrap:wrap;gap:var(--s-1) var(--s-3)}
+.cv-nodes{font-family:var(--mono);font-size:var(--t-xs);color:var(--ink-3);width:100%}
+.cv-nodes summary{cursor:pointer;display:flex;justify-content:space-between;gap:var(--s-2);min-height:28px;align-items:center}
+.cv-nline{border-top:1px solid var(--line)}
+.cv-node{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:var(--s-2);align-items:baseline;width:100%;border:0;background:transparent;color:var(--ink-2);font:inherit;text-align:left;padding:var(--s-1) 0;cursor:pointer;min-height:28px}
+.cv-node>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cv-node[aria-pressed=true]{color:var(--acc-ink)}
+.cv-node[data-mark=gap] .cv-nst,.cv-node[data-mark=stale] .cv-nst{color:var(--warn)}
+.cv-node[data-mark=off] .cv-nst{color:var(--bad)}
+.cv-node[data-mark=none]{color:var(--ink-3)}
+.cv-src{display:flex;flex-wrap:wrap;gap:var(--s-1);padding:0 0 var(--s-1) var(--s-3)}
+.cv-src .cv-chip{font-size:var(--t-xs);min-height:24px}
 .cv-rows{overflow:auto;flex:1}
 .cv-group{padding:var(--s-2) var(--s-4) var(--s-1);font-size:var(--t-xs);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--ink-3)}
 .cv-row{display:block;width:100%;text-align:left;border:0;border-top:1px solid var(--line);background:transparent;color:var(--ink);padding:var(--s-2) var(--s-4);font:inherit;cursor:pointer}

@@ -373,8 +373,8 @@ mod door_api {
     }
 }
 
-/// ai.session's contract (repo:ai-session crates/ai-session-api at ce6eef1, major 1), copied verbatim like
-/// feed_view_api: its doc comments are part of the schema hash (0x711b33ac59622d2b, pinned by a test), so not a
+/// ai.session's contract (repo:ai-session crates/ai-session-api at adcb7b0, major 1), copied verbatim like
+/// feed_view_api: its doc comments are part of the schema hash (0xaf962657245182c4, pinned by a test), so not a
 /// character may change. The Conversations tab relays only the ops of AI_OPS, and Events as server-sent events.
 #[allow(dead_code)]
 mod ai_session_api {
@@ -455,6 +455,18 @@ mod ai_session_api {
             /// leaves it open to continue. No `provider` = claude.terminal. Its own right, so a grant can allow one-shot
             /// questions without long sessions.
             pub struct AskReq { pub text: String, pub attachments: Vec<String>, pub provider: Option<ProviderPick>, pub model: Option<String>, pub account: Option<String>, pub system: Option<String>, pub profile: Option<String>, pub expect: Option<String>, pub budget: Budget, pub keep: bool }
+            /// How one (node, adapter, source) of `Coverage` stands. `Fresh`: the last good import is within two schedule
+            /// intervals. `Stale`: older (`since_ms` = that import). `Unreachable`: the adapter did not answer its last call.
+            /// `NoAdapter`: rows or a node with no importer answering. `Refused`: the adapter's gate or the realm said no.
+            pub enum CoverState { Fresh, Stale { since_ms: u64 }, Unreachable, NoAdapter, Refused { why: String } }
+            /// `real`: the adapter's last `Count` (None = not counted, never a guess). `listed`: rows shown under this node;
+            /// `own`: sessions on this node's disk that ai.session runs itself; `elsewhere`: sessions on this node's disk
+            /// whose one row shows another node. `listed + own + elsewhere` = `real` when nothing is missing.
+            pub struct CoverRow { pub node: String, pub adapter: String, pub source: String, pub real: Option<u32>, pub listed: u32, pub own: u32, pub elsewhere: u32, pub last_ok_ms: Option<u64>, pub state: CoverState }
+            /// Section 13.7: every node and source the caller's rows or the import cursors name. `total_rows` = `List.total`.
+            pub struct Covered { pub rows: Vec<CoverRow>, pub total_rows: u32, pub at_ms: u64 }
+            /// `List` newest first, only rows last active before `before_ms`: the next page of the same filter.
+            pub struct ListPageReq { pub list: ListReq, pub before_ms: u64 }
             pub struct Asked { pub conversation: String, pub message: Message, pub usage: Usage, pub refs: Vec<Ref> }
         }
         ops {
@@ -476,6 +488,9 @@ mod ai_session_api {
             // slice 3 from the tab (additive; ce docs/AI-AS-CELLS-2026-11-18.md section 12.1)
             17 => Continue(ConvReq) -> Result<Opened, Refusal>, needs "ai.session:send", deadline_ms 120000;
             18 => Ask(AskReq) -> Result<Asked, Refusal>, needs "ai.session:ask", deadline_ms 1800000;
+            // section 13 (additive): the count per node and source, and paging
+            19 => Coverage(()) -> Result<Covered, Refusal>, needs "ai.session:coverage";
+            21 => ListBefore(ListPageReq) -> Result<Listed, Refusal>, needs "ai.session:list";
             // profile rows (additive; 30.. so the import and schedule ops keep 16..29)
             30 => ProfilePut(Profile) -> Result<Profile, Refusal>, needs "ai.session:profile.write";
             31 => ProfileGet(ProfileKey) -> Result<Profile, Refusal>, needs "ai.session:profile.read";
@@ -2267,6 +2282,8 @@ async fn conv_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -
         "Fork" => call_op!(Fork),
         "Interrupt" => call_op!(Interrupt),
         "Close" => call_op!(Close),
+        "Coverage" => call_op!(Coverage),
+        "ListBefore" => call_op!(ListBefore),
         _ => call_op!(Ask),
     }
 }
@@ -2809,7 +2826,7 @@ mod contracts {
     /// the cell's door, so this pins it; the relay passes the three read ops only.
     fn copied_ai_session_contract_matches_the_cell() {
         use ce_wire::Api;
-        assert_eq!(<super::ai_session_api::AiSession as Api>::SCHEMA, 0x711b33ac59622d2b);
+        assert_eq!(<super::ai_session_api::AiSession as Api>::SCHEMA, 0xaf962657245182c4);
         let ops: Vec<&str> = super::ai_session_api::AiSession::OPS.iter().map(|o| o.name).collect();
         let names: Vec<&str> = apps_shell::AI_OPS.iter().map(|(o, _)| *o).collect();
         for op in &names {
@@ -2818,7 +2835,7 @@ mod contracts {
         for never in ["ConfigList", "ConfigGet", "ConfigPut", "ConfigEnable", "ConfigDisable", "ImportRun", "ProfilePut", "ProfileGet", "ProfileList", "Rehome"] {
             assert!(!names.contains(&never), "{never} is never passed from a page");
         }
-        assert_eq!(names, ["List", "Get", "Read", "Events", "Open", "Send", "Continue", "Fork", "Interrupt", "Close", "Ask"]);
+        assert_eq!(names, ["List", "Get", "Read", "Events", "Open", "Send", "Continue", "Fork", "Interrupt", "Close", "Ask", "Coverage", "ListBefore"]);
     }
 
     /// term.session major 1 as repo:term-session crates/term-session-api has it (its own test pins the same
