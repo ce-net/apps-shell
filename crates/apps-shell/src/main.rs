@@ -37,6 +37,8 @@
 //!   grant carries `arch.notes:where:author=<them>`); the Architecture tab (face 8887, `/architecture/`) serves the same
 //!   module and relays, and links to `/core/?view=architecture` until the gate routes it; each with a grant wire.ws-door mints for
 //!   the viewer, so arch.map's own gate decides (docs/ARCHITECTURE.md);
+//! - `GET /api/decisions`: the Approvals tab's cards, decision.card `BoardOp` as the viewer (repo:decision-card): the few
+//!   decisions the owner must answer, ranked, and how many asks closed with a receipt; the badge counts those cards;
 //! - `GET /api/inbox`, `/api/card?b=<id>`, `/api/cellmap`: the data cells called by name with a token attenuated
 //!   from this cell's grant to exactly the viewer's abilities in that cell (their row caveats included), so the data
 //!   cell's own gate decides, for this viewer.
@@ -1858,11 +1860,25 @@ async fn notes_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) 
     }
 }
 
+/// The Approvals badge: the cards waiting for this viewer (decision.card, shown and more), else the inbox's row count
+/// while decision.card is not theirs or does not answer.
 async fn badge(person: &str, abilities: &[String]) -> Option<u32> {
+    if let Some(b) = decisions(person, abilities).await.ok().flatten() {
+        return Some(b.cards.len() as u32 + b.more);
+    }
     use approve_inbox_api as ai;
     for_cell(abilities, "approve.inbox", "approve.inbox:read")?;
     let c = client::<ai::ApproveInbox>(person, abilities).await.ok()?;
     c.call::<ai::Badge>(&()).await.ok().map(|w| w.waiting)
+}
+
+/// decision.card `BoardOp` as the viewer: Ok(None) when the viewer holds no `decision.card:read`.
+async fn decisions(person: &str, abilities: &[String]) -> Result<Option<decision_card_api::Board>, String> {
+    if for_cell(abilities, "decision.card", "decision.card:read").is_none() {
+        return Ok(None);
+    }
+    let c = client::<decision_card_api::DecisionCard>(person, abilities).await?;
+    c.call::<decision_card_api::BoardOp>(&()).await.map(Some).map_err(|e| e.to_string())
 }
 
 async fn tabs(f: &Face, abilities: &[String], person: &str) -> TabsOut {
@@ -1909,6 +1925,11 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
                 }
             }
         }
+        "/api/decisions" if has("/approvals/") => match decisions(person, abilities).await {
+            Ok(Some(b)) => ("200 OK", json(&b)),
+            Ok(None) => refused,
+            Err(e) => down(e),
+        },
         "/api/cellmap" if has("/core/") || has("/home/") || (!mine.is_empty() && covers(abilities, "open.with:use")) => {
             if for_cell(abilities, "site.cellmap", "site.cellmap:read").is_none() {
                 return refused;

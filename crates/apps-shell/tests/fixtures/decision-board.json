@@ -1,0 +1,392 @@
+{
+ "cards": [
+  {
+   "id": "p-p0",
+   "kind": "policy",
+   "class": "Reversible",
+   "question": "Sign the standing rule? Reversible grants are approved without asking.",
+   "options": [
+    {
+     "label": "Auto-approve grants that are narrow, revocable, end within 90 days and reach no pay, sign, send-to-person or delete op, no wildcard and no owner root key. At most 50 a day, each with a receipt.",
+     "signs": "decision.card standing rule P0 option A: approve without asking every grant that is revocable, ends within 90 days of its ask, has exact scopes (no wildcard) and reaches no pay, sign, send-to-person or delete op and no owner root key (reach table of decision.card config ours). At most 50 a day, each with a hash-chained receipt. Ends 90 days after signing; Revoke ends it at once.",
+     "standing": true
+    },
+    {
+     "label": "As A, and also grants that reach owner root keys.",
+     "signs": "decision.card standing rule P0 option B: as option A, and also grants that reach owner root keys. At most 50 a day, each with a hash-chained receipt. Ends 90 days after signing; Revoke ends it at once.",
+     "standing": true
+    },
+    {
+     "label": "Do not sign: every grant keeps arriving as a row.",
+     "signs": "decision.card standing rule P0 option C: no standing rule; every grant is asked one by one.",
+     "standing": true
+    }
+   ],
+   "recommended": 0,
+   "because": "A is the rule as you stated it on 21 Nov; the reach test keeps money, law, messages and deletes as cards.",
+   "no_answer": {
+    "by": 1795497867,
+    "then": "nothing is applied; the waiting grants stay unapplied",
+    "cost": "live-frontend stays on the simulator; 3 asks wait"
+   },
+   "rank": {
+    "impact": 3,
+    "urgency": 3,
+    "blocked": 3,
+    "score": 36
+   },
+   "asks": [
+    {
+     "source": "grant.bundle",
+     "id": "gb-440ee993af4983b5#1"
+    },
+    {
+     "source": "grant.bundle",
+     "id": "gb-440ee993af4983b5#2"
+    },
+    {
+     "source": "grant.bundle",
+     "id": "gb-440ee993af4983b5#3"
+    }
+   ],
+   "lines": [
+    "grant.bundle gb-440ee993af4983b5#1: grant fe.visitor:issue-under-root by ce.iam to fe.visitor, until 2027-02-19",
+    "grant.bundle gb-440ee993af4983b5#2: grant cell.install:live-frontend@35b5864 by ce.iam on foreman-ops-1, until 2027-02-19",
+    "grant.bundle gb-440ee993af4983b5#3: grant route:live-frontend.ce-net.com/live-frontend->foreman-ops-1:http.serve by deploy.ship on foreman-ops-1, until 2027-02-19"
+   ],
+   "src": [
+    "cell:grant.bundle/gb-440ee993af4983b5#1",
+    "cell:grant.bundle/gb-440ee993af4983b5#2",
+    "cell:grant.bundle/gb-440ee993af4983b5#3"
+   ],
+   "sign_at": "https://apps.ce-net.com/grant?b=gb-440ee993af4983b5",
+   "oldest": 1795238667
+  },
+  {
+   "id": "c-d5dc0bcac5e5",
+   "kind": "decision",
+   "class": "Law",
+   "question": "Make 3 binding promises with company, plastiprint?",
+   "options": [
+    {
+     "label": "Yes, these 3",
+     "signs": "decision.card yes\nfeed.approve debian/1674f1ec6742db13: promise with company: price = ce-net digital twin offer (Leif 18 Nov 00:45 CST 'give people something concrete ... a digital twin ... sell the shit out of that'): free preview twin from their photos/drawings first, then th\nfeed.approve debian/012e0b688888cef5: promise with company: price = ce-net standard entry offers for new business clients (Leif 17 Nov 'get us 100 paying clients'): (a) DFM check of one part from their CAD, written report in 3 days, USD 150; (b) factory twin o\nfeed.approve debian/86342526c8400247: promise with plastiprint: payment = First set: Armand pays in full before the shop prints it",
+     "standing": false
+    },
+    {
+     "label": "Yes, and every similar ask: promises with company, plastiprint only, until 2026-12-21",
+     "signs": "decision.card yes and standing: promises with company, plastiprint only, until 2026-12-21\nfeed.approve debian/1674f1ec6742db13: promise with company: price = ce-net digital twin offer (Leif 18 Nov 00:45 CST 'give people something concrete ... a digital twin ... sell the shit out of that'): free preview twin from their photos/drawings first, then th\nfeed.approve debian/012e0b688888cef5: promise with company: price = ce-net standard entry offers for new business clients (Leif 17 Nov 'get us 100 paying clients'): (a) DFM check of one part from their CAD, written report in 3 days, USD 150; (b) factory twin o\nfeed.approve debian/86342526c8400247: promise with plastiprint: payment = First set: Armand pays in full before the shop prints it",
+     "standing": true
+    },
+    {
+     "label": "No, and do not ask again",
+     "signs": "decision.card no and deny similar\nfeed.approve debian/1674f1ec6742db13: promise with company: price = ce-net digital twin offer (Leif 18 Nov 00:45 CST 'give people something concrete ... a digital twin ... sell the shit out of that'): free preview twin from their photos/drawings first, then th\nfeed.approve debian/012e0b688888cef5: promise with company: price = ce-net standard entry offers for new business clients (Leif 17 Nov 'get us 100 paying clients'): (a) DFM check of one part from their CAD, written report in 3 days, USD 150; (b) factory twin o\nfeed.approve debian/86342526c8400247: promise with plastiprint: payment = First set: Armand pays in full before the shop prints it",
+     "standing": true
+    }
+   ],
+   "recommended": 0,
+   "because": "The price lines restate offers you set in your own words; a yes lets lanes quote them, a no holds every quote that uses them.",
+   "no_answer": {
+    "by": 1795853723,
+    "then": "hold: nothing is promised",
+    "cost": "3 asks keep waiting; the asking lanes stay on hold"
+   },
+   "rank": {
+    "impact": 3,
+    "urgency": 1,
+    "blocked": 0,
+    "score": 3
+   },
+   "asks": [
+    {
+     "source": "feed.approve",
+     "id": "debian/1674f1ec6742db13"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/012e0b688888cef5"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/86342526c8400247"
+    }
+   ],
+   "lines": [
+    "feed.approve debian/1674f1ec6742db13: promise with company: price = ce-net digital twin offer (Leif 18 Nov 00:45 CST 'give people something concrete ... a digital twin ... sell the shit out of that'): free preview twin from their photos/drawings first, then th",
+    "feed.approve debian/012e0b688888cef5: promise with company: price = ce-net standard entry offers for new business clients (Leif 17 Nov 'get us 100 paying clients'): (a) DFM check of one part from their CAD, written report in 3 days, USD 150; (b) factory twin o",
+    "feed.approve debian/86342526c8400247: promise with plastiprint: payment = First set: Armand pays in full before the shop prints it"
+   ],
+   "src": [
+    "cell:feed.approve@debian/012e0b688888cef5",
+    "cell:feed.approve@debian/1674f1ec6742db13",
+    "cell:feed.approve@debian/86342526c8400247"
+   ],
+   "sign_at": "https://apps.ce-net.com/foreman/",
+   "oldest": 1793025619
+  },
+  {
+   "id": "c-d3018da0aeca",
+   "kind": "decision",
+   "class": "Message",
+   "question": "Send 5 email messages to person@example.org, person@example.org and 3 more?",
+   "options": [
+    {
+     "label": "Yes, these 5",
+     "signs": "decision.card yes\nfeed.approve debian/b479b6cac881fc09: send on email to person@example.org\nfeed.approve debian/34e62c123d89da0a: send on email to person@example.org\nfeed.approve debian/04af9c48be65e448: send on email to person@example.org\nfeed.approve debian/099b39a44b830512: send on email to person@example.org\nfeed.approve debian/5d056148881a125f: send on email to person@example.org",
+     "standing": false
+    },
+    {
+     "label": "Yes, and every similar ask: on email, from foreman/lead, at most 5 a day, until 2026-12-21",
+     "signs": "decision.card yes and standing: on email, from foreman/lead, at most 5 a day, until 2026-12-21\nfeed.approve debian/b479b6cac881fc09: send on email to person@example.org\nfeed.approve debian/34e62c123d89da0a: send on email to person@example.org\nfeed.approve debian/04af9c48be65e448: send on email to person@example.org\nfeed.approve debian/099b39a44b830512: send on email to person@example.org\nfeed.approve debian/5d056148881a125f: send on email to person@example.org",
+     "standing": true
+    },
+    {
+     "label": "No, and do not ask again",
+     "signs": "decision.card no and deny similar\nfeed.approve debian/b479b6cac881fc09: send on email to person@example.org\nfeed.approve debian/34e62c123d89da0a: send on email to person@example.org\nfeed.approve debian/04af9c48be65e448: send on email to person@example.org\nfeed.approve debian/099b39a44b830512: send on email to person@example.org\nfeed.approve debian/5d056148881a125f: send on email to person@example.org",
+     "standing": true
+    }
+   ],
+   "recommended": 1,
+   "because": "You ordered these campaigns (26 Oct: send automatically); a standing yes ends per-message asks within the limits shown.",
+   "no_answer": {
+    "by": 1795853723,
+    "then": "hold: nothing is sent",
+    "cost": "5 asks keep waiting; the asking lanes stay on hold"
+   },
+   "rank": {
+    "impact": 3,
+    "urgency": 1,
+    "blocked": 0,
+    "score": 3
+   },
+   "asks": [
+    {
+     "source": "feed.approve",
+     "id": "debian/b479b6cac881fc09"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/34e62c123d89da0a"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/04af9c48be65e448"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/099b39a44b830512"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/5d056148881a125f"
+    }
+   ],
+   "lines": [
+    "feed.approve debian/b479b6cac881fc09: send on email to person@example.org",
+    "feed.approve debian/34e62c123d89da0a: send on email to person@example.org",
+    "feed.approve debian/04af9c48be65e448: send on email to person@example.org",
+    "feed.approve debian/099b39a44b830512: send on email to person@example.org",
+    "feed.approve debian/5d056148881a125f: send on email to person@example.org"
+   ],
+   "src": [
+    "cell:feed.approve@debian/04af9c48be65e448",
+    "cell:feed.approve@debian/099b39a44b830512",
+    "cell:feed.approve@debian/34e62c123d89da0a",
+    "cell:feed.approve@debian/5d056148881a125f",
+    "cell:feed.approve@debian/b479b6cac881fc09"
+   ],
+   "sign_at": "https://apps.ce-net.com/foreman/",
+   "oldest": 1794230538
+  },
+  {
+   "id": "c-7c44574001a8",
+   "kind": "decision",
+   "class": "Message",
+   "question": "Send 5 email messages to person@example.org, person@example.org and 3 more?",
+   "options": [
+    {
+     "label": "Yes, these 5",
+     "signs": "decision.card yes\nfeed.approve debian/f9f82a687001f136: send on email to person@example.org\nfeed.approve debian/1183581249a07ecb: send on email to person@example.org\nfeed.approve debian/2413f50d13307727: send on email to person@example.org\nfeed.approve debian/70901c0cf774a8cc: send on email to person@example.org\nfeed.approve debian/5543fa140fd2e92c: send on email to person@example.org",
+     "standing": false
+    },
+    {
+     "label": "Yes, and every similar ask: on email, from foreman/win-9925.wf, at most 5 a day, until 2026-12-21",
+     "signs": "decision.card yes and standing: on email, from foreman/win-9925.wf, at most 5 a day, until 2026-12-21\nfeed.approve debian/f9f82a687001f136: send on email to person@example.org\nfeed.approve debian/1183581249a07ecb: send on email to person@example.org\nfeed.approve debian/2413f50d13307727: send on email to person@example.org\nfeed.approve debian/70901c0cf774a8cc: send on email to person@example.org\nfeed.approve debian/5543fa140fd2e92c: send on email to person@example.org",
+     "standing": true
+    },
+    {
+     "label": "No, and do not ask again",
+     "signs": "decision.card no and deny similar\nfeed.approve debian/f9f82a687001f136: send on email to person@example.org\nfeed.approve debian/1183581249a07ecb: send on email to person@example.org\nfeed.approve debian/2413f50d13307727: send on email to person@example.org\nfeed.approve debian/70901c0cf774a8cc: send on email to person@example.org\nfeed.approve debian/5543fa140fd2e92c: send on email to person@example.org",
+     "standing": true
+    }
+   ],
+   "recommended": 1,
+   "because": "You ordered these campaigns (26 Oct: send automatically); a standing yes ends per-message asks within the limits shown.",
+   "no_answer": {
+    "by": 1795853723,
+    "then": "hold: nothing is sent",
+    "cost": "5 asks keep waiting; the asking lanes stay on hold"
+   },
+   "rank": {
+    "impact": 3,
+    "urgency": 1,
+    "blocked": 0,
+    "score": 3
+   },
+   "asks": [
+    {
+     "source": "feed.approve",
+     "id": "debian/f9f82a687001f136"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/1183581249a07ecb"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/2413f50d13307727"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/70901c0cf774a8cc"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/5543fa140fd2e92c"
+    }
+   ],
+   "lines": [
+    "feed.approve debian/f9f82a687001f136: send on email to person@example.org",
+    "feed.approve debian/1183581249a07ecb: send on email to person@example.org",
+    "feed.approve debian/2413f50d13307727: send on email to person@example.org",
+    "feed.approve debian/70901c0cf774a8cc: send on email to person@example.org",
+    "feed.approve debian/5543fa140fd2e92c: send on email to person@example.org"
+   ],
+   "src": [
+    "cell:feed.approve@debian/1183581249a07ecb",
+    "cell:feed.approve@debian/2413f50d13307727",
+    "cell:feed.approve@debian/5543fa140fd2e92c",
+    "cell:feed.approve@debian/70901c0cf774a8cc",
+    "cell:feed.approve@debian/f9f82a687001f136"
+   ],
+   "sign_at": "https://apps.ce-net.com/foreman/",
+   "oldest": 1794295735
+  },
+  {
+   "id": "c-38181f5786c6",
+   "kind": "decision",
+   "class": "Money",
+   "question": "Spend RMB 104 + USD 186 on 5 orders (keeppower, feetech, ufine and 2 more)?",
+   "options": [
+    {
+     "label": "Yes, these 5",
+     "signs": "decision.card yes\nfeed.approve debian/c69e0addd742715e: pay 140 USD to keeppower: payment = USD 140 sample order paid by credit card on Alibaba\nfeed.approve debian/c50e05cb002c9b92: pay 104 RMB to feetech: order = sample: 15x HD-1910-C001 + 6 servo leads AMP 2.0-3P, about 104 RMB each\nfeed.approve debian/03ec20ad53e37f0a: pay 19 USD to ufine: order = sample: 2x 2S 18650 pack with BMS, XT30, USD 19 PayPal incl. shipping\nfeed.approve debian/3b880a51b3039603: pay 15 USD to zoty: order = sample: MR1622-ZZ + MR6700-ZZ bearings and shafts, USD 15 PayPal, paid 25 Oct\nfeed.approve debian/8445df1809ca27f4: pay 12 USD to huiber: order = sample: 1 IMX219 camera with M12 lens, USD 12 EXW + courier, PI with courier asked 25 Oct",
+     "standing": false
+    },
+    {
+     "label": "Yes, and every similar ask: each at most USD 140, payees keeppower, feetech, ufine, zoty, huiber only, until 2026-12-21",
+     "signs": "decision.card yes and standing: each at most USD 140, payees keeppower, feetech, ufine, zoty, huiber only, until 2026-12-21\nfeed.approve debian/c69e0addd742715e: pay 140 USD to keeppower: payment = USD 140 sample order paid by credit card on Alibaba\nfeed.approve debian/c50e05cb002c9b92: pay 104 RMB to feetech: order = sample: 15x HD-1910-C001 + 6 servo leads AMP 2.0-3P, about 104 RMB each\nfeed.approve debian/03ec20ad53e37f0a: pay 19 USD to ufine: order = sample: 2x 2S 18650 pack with BMS, XT30, USD 19 PayPal incl. shipping\nfeed.approve debian/3b880a51b3039603: pay 15 USD to zoty: order = sample: MR1622-ZZ + MR6700-ZZ bearings and shafts, USD 15 PayPal, paid 25 Oct\nfeed.approve debian/8445df1809ca27f4: pay 12 USD to huiber: order = sample: 1 IMX219 camera with M12 lens, USD 12 EXW + courier, PI with courier asked 25 Oct",
+     "standing": true
+    },
+    {
+     "label": "No, and do not ask again",
+     "signs": "decision.card no and deny similar\nfeed.approve debian/c69e0addd742715e: pay 140 USD to keeppower: payment = USD 140 sample order paid by credit card on Alibaba\nfeed.approve debian/c50e05cb002c9b92: pay 104 RMB to feetech: order = sample: 15x HD-1910-C001 + 6 servo leads AMP 2.0-3P, about 104 RMB each\nfeed.approve debian/03ec20ad53e37f0a: pay 19 USD to ufine: order = sample: 2x 2S 18650 pack with BMS, XT30, USD 19 PayPal incl. shipping\nfeed.approve debian/3b880a51b3039603: pay 15 USD to zoty: order = sample: MR1622-ZZ + MR6700-ZZ bearings and shafts, USD 15 PayPal, paid 25 Oct\nfeed.approve debian/8445df1809ca27f4: pay 12 USD to huiber: order = sample: 1 IMX219 camera with M12 lens, USD 12 EXW + courier, PI with courier asked 25 Oct",
+     "standing": true
+    }
+   ],
+   "recommended": 0,
+   "because": "Each is at most 140, within the small-spend limit of 200; a no leaves them unplaced.",
+   "no_answer": {
+    "by": 1795853723,
+    "then": "hold: nothing is paid or ordered",
+    "cost": "5 asks keep waiting; the asking lanes stay on hold"
+   },
+   "rank": {
+    "impact": 2,
+    "urgency": 1,
+    "blocked": 0,
+    "score": 2
+   },
+   "asks": [
+    {
+     "source": "feed.approve",
+     "id": "debian/c69e0addd742715e"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/c50e05cb002c9b92"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/03ec20ad53e37f0a"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/3b880a51b3039603"
+    },
+    {
+     "source": "feed.approve",
+     "id": "debian/8445df1809ca27f4"
+    }
+   ],
+   "lines": [
+    "feed.approve debian/c69e0addd742715e: pay 140 USD to keeppower: payment = USD 140 sample order paid by credit card on Alibaba",
+    "feed.approve debian/c50e05cb002c9b92: pay 104 RMB to feetech: order = sample: 15x HD-1910-C001 + 6 servo leads AMP 2.0-3P, about 104 RMB each",
+    "feed.approve debian/03ec20ad53e37f0a: pay 19 USD to ufine: order = sample: 2x 2S 18650 pack with BMS, XT30, USD 19 PayPal incl. shipping",
+    "feed.approve debian/3b880a51b3039603: pay 15 USD to zoty: order = sample: MR1622-ZZ + MR6700-ZZ bearings and shafts, USD 15 PayPal, paid 25 Oct",
+    "feed.approve debian/8445df1809ca27f4: pay 12 USD to huiber: order = sample: 1 IMX219 camera with M12 lens, USD 12 EXW + courier, PI with courier asked 25 Oct"
+   ],
+   "src": [
+    "cell:feed.approve@debian/03ec20ad53e37f0a",
+    "cell:feed.approve@debian/3b880a51b3039603",
+    "cell:feed.approve@debian/8445df1809ca27f4",
+    "cell:feed.approve@debian/c50e05cb002c9b92",
+    "cell:feed.approve@debian/c69e0addd742715e"
+   ],
+   "sign_at": "https://apps.ce-net.com/foreman/",
+   "oldest": 1792938966
+  }
+ ],
+ "more": 2,
+ "asks": 67,
+ "closed": 36,
+ "waiting_on_rule": 3,
+ "returned": 8,
+ "sources": [
+  {
+   "cell": "grant.bundle",
+   "node": "foreman-ops-1",
+   "state": "Live",
+   "ms": 4229,
+   "asks": 39
+  },
+  {
+   "cell": "needs.list",
+   "node": "foreman-ops-1",
+   "state": "Live",
+   "ms": 7,
+   "asks": 0
+  },
+  {
+   "cell": "feed.approve",
+   "node": "foreman-ops-1",
+   "state": "Live",
+   "ms": 91,
+   "asks": 0
+  },
+  {
+   "cell": "feed.approve",
+   "node": "debian",
+   "state": "Live",
+   "ms": 167,
+   "asks": 28
+  }
+ ],
+ "not_connected": [
+  "payments and invoices",
+  "contracts and signatures",
+  "tax and filings",
+  "deletes"
+ ],
+ "as_of_ms": 1795248923000
+}

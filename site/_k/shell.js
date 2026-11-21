@@ -75,7 +75,7 @@ const VIEWS = {
   'home::Links': ['v/links.js', ['links']],
 };
 // a tab view's own ops (the tab's routes on this face)
-const TAB_OPS = { 'v/home.js': ['layout'], 'v/search.js': ['search'], 'v/core.js': ['cellmap', 'inbox'], 'v/approvals.js': ['inbox', 'card'] };
+const TAB_OPS = { 'v/home.js': ['layout'], 'v/search.js': ['search'], 'v/core.js': ['cellmap', 'inbox'], 'v/approvals.js': ['decisions', 'inbox', 'card'] };
 
 const STATES = { live: '', asof: 'as of', pinned: 'pinned', refused: 'not open to you', unknown: 'unknown', outside: 'outside ce-net' };
 const KIND_MARK = { repo: 'file', doc: 'doc', person: 'person', promise: 'promise', call: 'call', meet: 'recording', cell: 'cell', node: 'node',

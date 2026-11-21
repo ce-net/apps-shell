@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="_k/tokens.css"><link rel="stylesheet" href="_k/components.css"><link rel="stylesheet" href="_k/shell.css">
+<style>body{margin:0}.page{padding:24px 16px;max-width:880px;margin:0 auto}</style></head>
+<body><div class="page"><main id="main"></main></div>
+<script type="module">
+const h = (t, a = {}, ...kids) => { const e = document.createElement(t);
+  for (const [k, v] of Object.entries(a)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v); }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k))); return e; };
+const board = await (await fetch('board.json')).json();
+const host = { h, ref: { show: (r, o) => h('a', { class: 'btn', href: '#' }, (o && o.title) || r) },
+  call: async (op) => op === 'decisions' ? { status: 200, ok: true, data: board } : { status: 403, ok: false, data: {} } };
+const m = await import('./v/approvals.js');
+m.mount(document.getElementById('main'), host);
+</script></body></html>
