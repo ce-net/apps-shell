@@ -415,6 +415,11 @@ fn the_ai_relay_passes_its_table_only_and_checks_each_request() {
     assert!(ai_check("Open", &mut open).is_err());
     let mut open = serde_json::json!({ "provider": { "Named": "claude.terminal" }, "harness": "Bare", "tools": [] });
     assert!(ai_check("Open", &mut open).is_ok());
+    // a profile brings its own harness (prof:agent.optimizer is Code with shell): refused, whatever harness is named
+    let mut open = serde_json::json!({ "provider": { "Named": "claude.terminal" }, "harness": "Bare", "profile": "prof:agent.optimizer", "tools": [] });
+    assert!(ai_check("Open", &mut open).is_err(), "a profile's Code harness is a shell on the node");
+    assert!(ai_check("Ask", &mut serde_json::json!({ "text": "hi", "profile": "prof:agent.optimizer" })).is_err());
+    assert!(ai_check("Ask", &mut serde_json::json!({ "text": "hi", "profile": null })).is_ok());
     let mut send = serde_json::json!({ "conversation": "c1", "parts": [{ "Text": "hi" }], "expect": null, "wait": true });
     ai_check("Send", &mut send).unwrap();
     assert_eq!(send["wait"], false, "the answer comes over Events");

@@ -124,6 +124,10 @@ pub fn ai_need(op: &str) -> Option<&'static str> {
 /// page); `Send` never waits (the answer comes over Events), with text and ce-ref attachments only.
 pub fn ai_check(op: &str, body: &mut serde_json::Value) -> Result<(), String> {
     let o = body.as_object_mut().ok_or("a JSON object")?;
+    // a profile row carries its own harness (a Code one, with shell, is a shell on the node): never from a page
+    if matches!(op, "Open" | "Ask") && o.get("profile").is_some_and(|p| !p.is_null()) {
+        return Err("a page opens no profile: a profile carries its own harness".into());
+    }
     match op {
         "Open" => {
             if o.get("harness").is_some_and(|h| h != "Bare") {
