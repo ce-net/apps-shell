@@ -1,7 +1,7 @@
 //! `apps-shell serve`: the apps.shell cell behind this machine's door, its liveness loop, and its gateway face.
 //!
 //! The face listens on loopback once per tab route it serves (`$APPS_SHELL_HTTP`, default
-//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/,127.0.0.1:8886=/conversations/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
+//! `127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/,127.0.0.1:8886=/conversations/,127.0.0.1:8887=/architecture/`); the apps.ce-net.com sign-in gate sends `/<route>*` there with
 //! the prefix cut and the person signed (`X-Ce-Person*`, the gate's per-host key, repo:ui-cells site-gateway's check).
 //! - `GET /` the page (the same bytes for everyone; it names no system), `/_k/*` the kit;
 //! - `GET /tabs.json` this viewer's tabs: allowed by their abilities and live (their shell answered HealthOp by name
@@ -30,6 +30,13 @@
 //!   viewer is dropped, one whose cell does not answer stays and shows its own state;
 //! - `GET /api/calls?from=&to=`, `/api/promises`, `/api/links`: the Home slots' data, read as the viewer
 //!   (crm.calls List, crm.promises List, the node's home-links rows);
+//! - the Architecture view under Core (`/core/?view=architecture`, for a viewer holding `arch.map:see`): `GET
+//!   /v/architecture.js` is the module arch.map ships (its `Ui`, as the viewer), `/_c/<sha256>.js` its copy, and `POST
+//!   /api/cell/arch.map/<Op>` (Core and Architecture faces) relays GraphFull, DetailFull, Sources, Graph, Detail, Story,
+//!   Progress and Changes, and `POST /api/cell/arch.notes/<Op>` the notes strip's Put, List and Close (the viewer's
+//!   grant carries `arch.notes:where:author=<them>`); the Architecture tab (face 8887, `/architecture/`) serves the same
+//!   module and relays, and links to `/core/?view=architecture` until the gate routes it; each with a grant wire.ws-door mints for
+//!   the viewer, so arch.map's own gate decides (docs/ARCHITECTURE.md);
 //! - `GET /api/inbox`, `/api/card?b=<id>`, `/api/cellmap`: the data cells called by name with a token attenuated
 //!   from this cell's grant to exactly the viewer's abilities in that cell (their row caveats included), so the data
 //!   cell's own gate decides, for this viewer.
@@ -86,6 +93,7 @@ async fn shell_ok(shell: &str) -> bool {
         "home.shell" => health!(home_shell_api::HomeShell, home_shell_api::HealthOp, "home.shell:health"),
         "feed.view" => health!(feed_view_api::FeedView, feed_view_api::HealthOp, "feed.view:health"),
         "ai.session" => health!(ai_session_api::AiSession, ai_session_api::HealthOp, "ai.session:health"),
+        "arch.map" => health!(arch_map_api::ArchMap, arch_map_api::HealthOp, "arch.map:health"),
         // a shell whose contract this build does not carry yet: never live here (its system shows in site.cellmap)
         _ => None,
     };
@@ -187,6 +195,8 @@ struct TabOut {
     system: String,
     title: String,
     route: String,
+    /// where the tab opens while the gate does not serve its route (NOT_ROUTED_YET); None = its route
+    href: Option<String>,
     view: Option<String>,
     badge: Option<u32>,
 }
@@ -195,8 +205,118 @@ struct TabOut {
 struct TabsOut {
     person: String,
     here: String,
+    /// the extra views of this tab open to this viewer (`?view=<name>`; EXTRA_VIEWS)
+    views: Vec<String>,
+    /// the notes cell the Architecture view may write to for this viewer (only with arch.notes:write)
+    notes: Option<String>,
     tabs: Vec<TabOut>,
     at_ms: u64,
+}
+
+/// arch.notes's contract (repo:arch-notes crates/arch-notes-api, major 1, frozen whole at 534c49f), copied verbatim:
+/// the notes strip's relay (0xa4dc01ad901bfcda, pinned by a test).
+#[allow(dead_code)]
+mod arch_notes_api {
+    ce_wire::api! {
+        api ArchNotes = "arch.notes", version 1;
+        types {
+            /// Health contract: these three fields, in this order, in every cell.
+            pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+            /// Hybrid logical clock: wall milliseconds, then a counter for writes in the same millisecond. Orders notes.
+            pub struct Hlc { pub ms: u64, pub n: u32 }
+            pub enum NoteState { Open, Taken, Closed }
+            /// One note. `id` "" on a first Put: the cell names it. `target` is the atlas id the note is on; `section` a doc
+            /// ce-ref with `#anchor` when the note is about a part of a document. `at`, `state`, `taken_by`, `closed_at`
+            /// are the cell's: a Put sets `at`, keeps the stored state, and opens a new note.
+            pub struct Note { pub id: String, pub target: String, pub section: Option<String>, pub text: String,
+                              pub author: String, pub at: Hlc, pub state: NoteState, pub taken_by: Option<String>,
+                              pub closed_at: Option<Hlc> }
+            /// `target` None = every target; `open_only` leaves out Closed; `since` only notes changed after it; `max` 0 = 100
+            /// (at most 500). Newest first.
+            pub struct ListReq { pub target: Option<String>, pub open_only: bool, pub since: Option<Hlc>, pub max: u32 }
+            pub struct Taken { pub id: String, pub by: String }
+            /// `seq`: state.store's write sequence of the row.
+            pub struct Stored { pub id: String, pub at: Hlc, pub seq: u64 }
+            pub enum NoteError { Invalid(String), Denied(String), NoSuchNote(String), Store(String) }
+        }
+        ops {
+            1 => HealthOp(()) -> Health,                     needs "arch.notes:health";
+            2 => Put(Note) -> Result<Stored, NoteError>,     needs "arch.notes:write";   // where author == caller
+            3 => List(ListReq) -> Vec<Note>,                 needs "arch.notes:read";
+            4 => Take(Taken) -> Result<(), NoteError>,       needs "arch.notes:take";    // a lane claims it
+            5 => Close(String) -> Result<(), NoteError>,     needs "arch.notes:write";   // its author, or a holder of take
+        }
+        streams {
+            6 => Watch(ListReq) -> stream Note,              needs "arch.notes:read";
+        }
+    }
+}
+
+/// arch.map's contract (repo:arch-map crates/arch-map-api, major 1, frozen whole at f5dc421), copied verbatim: another
+/// hash and every call is refused as another api (0x934e4e8a827ab7ab, pinned by a test).
+#[allow(dead_code)]
+mod arch_map_api {
+    ce_wire::api! {
+        api ArchMap = "arch.map", version 1;
+        types {
+            pub struct Health { pub ok: bool, pub version: String, pub uptime_s: u64 }
+            pub enum Lens { Layers, Systems, Machines, Caps, Pipeline, Migration }
+            pub enum Class { Machine, Wire, Cell, System, Face, Cap, Piece }
+            pub enum State { Live, Installed, Declared, Designed, Down, Retired }
+            pub enum EdgeKind { Nest, Needs, Call, Runs, Offers, Holds, Serves, Next, Doc }
+            pub struct View { pub lens: Lens, pub target: bool, pub root: Option<String>, pub filter: String,
+                              pub max_nodes: u32 }
+            pub struct GNode { pub id: String, pub class: Class, pub layer: u8, pub label: String, pub sub: String,
+                               pub state: State, pub parent: Option<String>, pub cells: u32, pub live: u32,
+                               pub want: u32, pub calls_min: u32, pub notes: u32, pub docs: u32 }
+            pub struct GEdge { pub from: String, pub to: String, pub kind: EdgeKind, pub count: u32, pub label: String }
+            pub struct LayerCount { pub layer: u8, pub name: String, pub live: u32, pub known: u32, pub target: u32 }
+            pub struct Source { pub key: String, pub cell: String, pub op: String, pub ok: bool, pub rows: u32,
+                                pub age_s: u64, pub pin: String, pub err: String }
+            pub struct ArchGraph { pub seq: u64, pub as_of_ms: u64, pub nodes: Vec<GNode>, pub edges: Vec<GEdge>,
+                               pub layers: Vec<LayerCount>, pub hidden: u32, pub sources_ok: u32, pub sources: u32 }
+            pub struct OpRow { pub n: u32, pub name: String, pub req: String, pub resp: String, pub right: String }
+            pub struct Place { pub node: String, pub class: String, pub processes: u32, pub sha256: String, pub seen_s: u64 }
+            pub struct Caller { pub from: String, pub count: u32, pub window_s: u32 }
+            pub struct DocRef { pub title: String, pub to: String, pub public: bool }
+            pub struct DetailDoc { pub node: GNode, pub repo: String, pub owner: String, pub version: String,
+                                   pub schema: String, pub ops: Vec<OpRow>, pub on: Vec<Place>, pub callers: Vec<Caller>,
+                                   pub needs: Vec<String>, pub needed_by: Vec<String>, pub pieces: Vec<String>,
+                                   pub docs: Vec<DocRef> }
+            pub struct StoryStep { pub n: u32, pub title: String, pub caption: String, pub lens: Lens, pub target: bool,
+                                   pub focus: Vec<String> }
+            pub struct StepRow { pub id: String, pub title: String, pub state: State, pub probe: String,
+                                 pub open: bool, pub doc: Option<DocRef> }
+            pub struct Track { pub key: String, pub title: String, pub closed: u32, pub total: u32, pub steps: Vec<StepRow> }
+            pub struct Measure { pub name: String, pub before: String, pub now: String, pub target: String }
+            pub struct ArchProgress { pub tracks: Vec<Track>, pub measures: Vec<Measure> }
+            pub struct ChangesReq { pub after: u64, pub view: View, pub wait_ms: u32 }
+            pub struct Delta { pub seq: u64, pub put: Vec<GNode>, pub gone: Vec<String>, pub edges: Vec<GEdge>,
+                               pub layers: Vec<LayerCount> }
+            pub struct UiReq { pub view: String }
+            pub struct Bundle { pub sha256: String, pub speaks: Vec<u16>, pub kit: u16, pub bytes: Vec<u8> }
+            pub struct ImportReq { pub doc: String, pub dry: bool }
+            pub struct Imported { pub pieces: u32, pub links: u32, pub changed: u32, pub skipped: Vec<String> }
+            pub struct Alias { pub id: String, pub label: String, pub caption: String, pub show: bool }
+            pub enum ArchError { Source(String), Store(String), NoSuchNode(String), NoSuchView(String), Invalid(String) }
+        }
+        ops {
+            1  => HealthOp(()) -> Health,                               needs "arch.map:health";
+            2  => Graph(View) -> Result<ArchGraph, ArchError>,              needs "arch.map:see";       // demo projection
+            3  => Detail(String) -> Result<DetailDoc, ArchError>,       needs "arch.map:see";       // demo projection
+            4  => Story(()) -> Result<Vec<StoryStep>, ArchError>,       needs "arch.map:see";
+            5  => Progress(()) -> Result<ArchProgress, ArchError>,          needs "arch.map:see";       // demo projection
+            6  => Ui(UiReq) -> Result<Bundle, ArchError>,               needs "arch.map:see";
+            7  => GraphFull(View) -> Result<ArchGraph, ArchError>,          needs "arch.map:internal";
+            8  => DetailFull(String) -> Result<DetailDoc, ArchError>,   needs "arch.map:internal";
+            9  => ProgressFull(()) -> Result<ArchProgress, ArchError>,      needs "arch.map:internal";
+            10 => Sources(()) -> Vec<Source>,                           needs "arch.map:internal";
+            11 => Changes(ChangesReq) -> Result<Delta, ArchError>,      needs "arch.map:internal";
+            12 => Import(ImportReq) -> Result<Imported, ArchError>,     needs "arch.map:curate";
+            13 => PutAlias(Alias) -> Result<(), ArchError>,             needs "arch.map:curate";
+            14 => PutStory(StoryStep) -> Result<(), ArchError>,         needs "arch.map:curate";
+        }
+    }
 }
 
 /// wire.ws-door's contract (repo:wire-ws-door crates/wire-ws-door-api, major 2), copied verbatim as in repo:control-room.
@@ -1484,6 +1604,12 @@ async fn viewer(person: &str, abilities: &[String]) -> Result<Arc<ViewerGrant>, 
         want.sort();
         want.dedup();
     }
+    // the notes cell writes a note as its author only: the verified person rides in the grant as its author caveat
+    if want.iter().any(|a| a.starts_with("arch.notes:")) && person_ok(person) {
+        want.push(format!("arch.notes:where:author={person}"));
+        want.sort();
+        want.dedup();
+    }
     let grants = GRANTS.get_or_init(Arc::default).clone();
     let slot = format!("{person}\n{}", want.join(","));
     if let Some(g) = grants.read().await.get(&slot) {
@@ -1597,6 +1723,141 @@ async fn feed_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -
     }
 }
 
+/// The ops the Architecture relay passes (slice 1 the internal reads, slice 2 the demo reads and Changes), and nothing
+/// else. The cell's own gate decides each (a `see`-only viewer gets 403 on the internal ones).
+const ARCH_OPS: &[&str] = &["GraphFull", "DetailFull", "Sources", "Graph", "Detail", "Story", "Progress", "Changes"];
+
+/// The Architecture view modules fetched from arch.map `Ui`, by sha256 (their `/_c/<sha256>.js` copies).
+static ARCH_BUNDLES: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, Arc<Vec<u8>>>>> = std::sync::OnceLock::new();
+
+/// `GET /v/architecture.js`: the view module arch.map ships, asked as the viewer (`Ui{view: "Architecture"}`), checked
+/// against its own sha256 and the majors this shell speaks (contract 1, kit 1). None held: refused (404 to the browser).
+async fn arch_bundle(person: &str, abilities: &[String]) -> Result<(String, Arc<Vec<u8>>), String> {
+    use arch_map_api::*;
+    use sha2::Digest;
+    let ab = for_cell(abilities, "arch.map", "arch.map:see").ok_or("refused")?;
+    let c = client::<ArchMap>(person, &ab).await?;
+    let b = match c.call::<Ui>(&UiReq { view: "Architecture".into() }).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => return Err(format!("{e:?}")),
+        Err(e) => return Err(e.to_string()),
+    };
+    let sha: String = sha2::Sha256::digest(&b.bytes).iter().map(|x| format!("{x:02x}")).collect();
+    if sha != b.sha256 || !b.speaks.contains(&1) || b.kit != 1 || b.bytes.is_empty() || b.bytes.len() > VIEW_MAX {
+        return Err("the bundle does not match its hash, or speaks other majors".into());
+    }
+    let bytes = Arc::new(b.bytes);
+    ARCH_BUNDLES.get_or_init(Default::default).lock().unwrap().insert(sha.clone(), bytes.clone());
+    Ok((sha, bytes))
+}
+
+/// `POST /api/cell/arch.map/<Op>`: GraphFull, DetailFull or Sources as the viewer (JSON in, JSON out), with a grant
+/// wire.ws-door minted for their own `arch.map:*` rights, so arch.map's gate decides (a viewer with `see` alone gets
+/// 403 from the cell on these internal ops).
+async fn arch_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -> (&'static str, Vec<u8>) {
+    use arch_map_api::*;
+    let err = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+    if !ARCH_OPS.contains(&op) {
+        return err("404 Not Found", "no such op".into());
+    }
+    let Some(ab) = for_cell(abilities, "arch.map", "arch.map:see") else { return err("403 Forbidden", "refused".into()) };
+    let mut c = match client::<ArchMap>(person, &ab).await {
+        Ok(c) => c,
+        Err(e) if e == "refused" => return err("403 Forbidden", "refused".into()),
+        Err(e) => return err("503 Service Unavailable", e),
+    };
+    // Changes holds the call open until the map changes (at most 30 s)
+    if op == "Changes" {
+        c.deadline = Duration::from_secs(35);
+    }
+    fn out<T: serde::Serialize>(r: Result<Result<T, ArchError>, ce_wire::WireError>) -> (&'static str, Vec<u8>) {
+        let e = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+        match r {
+            Ok(Ok(v)) => ("200 OK", json(&v)),
+            Ok(Err(ArchError::NoSuchNode(t))) => e("404 Not Found", format!("no such node {t}")),
+            Ok(Err(ArchError::NoSuchView(t))) => e("404 Not Found", format!("no such view {t}")),
+            Ok(Err(ArchError::Invalid(m))) => e("400 Bad Request", m),
+            Ok(Err(ArchError::Source(m))) | Ok(Err(ArchError::Store(m))) => e("502 Bad Gateway", m),
+            Err(ce_wire::WireError::Refused(_)) => e("403 Forbidden", "refused".into()),
+            Err(x) => e("503 Service Unavailable", x.to_string()),
+        }
+    }
+    match op {
+        "GraphFull" => match serde_json::from_slice::<View>(body) {
+            Ok(v) => out(c.call::<GraphFull>(&v).await),
+            Err(x) => err("400 Bad Request", format!("body: {x}")),
+        },
+        "DetailFull" => match serde_json::from_slice::<String>(body) {
+            Ok(id) => out(c.call::<DetailFull>(&id).await),
+            Err(x) => err("400 Bad Request", format!("body: {x}")),
+        },
+        "Graph" => match serde_json::from_slice::<View>(body) {
+            Ok(v) => out(c.call::<Graph>(&v).await),
+            Err(x) => err("400 Bad Request", format!("body: {x}")),
+        },
+        "Detail" => match serde_json::from_slice::<String>(body) {
+            Ok(id) => out(c.call::<Detail>(&id).await),
+            Err(x) => err("400 Bad Request", format!("body: {x}")),
+        },
+        "Story" => out(c.call::<Story>(&()).await),
+        "Progress" => out(c.call::<Progress>(&()).await),
+        "Changes" => match serde_json::from_slice::<ChangesReq>(body) {
+            Ok(r) => out(c.call::<Changes>(&ChangesReq { wait_ms: r.wait_ms.min(30_000), ..r }).await),
+            Err(x) => err("400 Bad Request", format!("body: {x}")),
+        },
+        _ => match c.call::<Sources>(&()).await {
+            Ok(v) => ("200 OK", json(&v)),
+            Err(ce_wire::WireError::Refused(_)) => err("403 Forbidden", "refused".into()),
+            Err(x) => err("503 Service Unavailable", x.to_string()),
+        },
+    }
+}
+
+/// `POST /api/cell/arch.notes/<Op>`: the notes strip's Put, List or Close as the viewer, with a grant wire.ws-door mints
+/// for their own `arch.notes:*` rights plus `arch.notes:where:author=<them>` (viewer()), so arch.notes decides who may
+/// write as whom. A viewer without the op's right gets 403 here, before any cell is asked.
+async fn notes_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -> (&'static str, Vec<u8>) {
+    use arch_notes_api::*;
+    let err = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+    let Some((_, need)) = NOTES_OPS.iter().find(|(o, _)| *o == op) else { return err("404 Not Found", "no such op".into()) };
+    let Some(ab) = for_cell(abilities, "arch.notes", need) else { return err("403 Forbidden", "refused".into()) };
+    let c = match client::<ArchNotes>(person, &ab).await {
+        Ok(c) => c,
+        Err(e) if e == "refused" => return err("403 Forbidden", "refused".into()),
+        Err(e) => return err("503 Service Unavailable", e),
+    };
+    fn out<T: serde::Serialize>(r: Result<Result<T, NoteError>, ce_wire::WireError>) -> (&'static str, Vec<u8>) {
+        let e = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
+        match r {
+            Ok(Ok(v)) => ("200 OK", json(&v)),
+            Ok(Err(NoteError::Denied(m))) => e("403 Forbidden", m),
+            Ok(Err(NoteError::NoSuchNote(m))) => e("404 Not Found", format!("no such note {m}")),
+            Ok(Err(NoteError::Invalid(m))) => e("400 Bad Request", m),
+            Ok(Err(NoteError::Store(m))) => e("502 Bad Gateway", m),
+            Err(ce_wire::WireError::Refused(_)) => e("403 Forbidden", "refused".into()),
+            Err(x) => e("503 Service Unavailable", x.to_string()),
+        }
+    }
+    match op {
+        "Put" => match serde_json::from_slice::<Note>(body) {
+            Ok(n) => out(c.call::<Put>(&n).await),
+            Err(x) => err("400 Bad Request", format!("body: {x}")),
+        },
+        "List" => match serde_json::from_slice::<ListReq>(body) {
+            Ok(r) => match c.call::<List>(&ListReq { max: r.max.min(100), ..r }).await {
+                Ok(v) => ("200 OK", json(&v)),
+                Err(ce_wire::WireError::Refused(_)) => err("403 Forbidden", "refused".into()),
+                Err(x) => err("503 Service Unavailable", x.to_string()),
+            },
+            Err(x) => err("400 Bad Request", format!("body: {x}")),
+        },
+        _ => match serde_json::from_slice::<String>(body) {
+            Ok(id) => out(c.call::<Close>(&id).await),
+            Err(x) => err("400 Bad Request", format!("body: {x}")),
+        },
+    }
+}
+
 async fn badge(person: &str, abilities: &[String]) -> Option<u32> {
     use approve_inbox_api as ai;
     for_cell(abilities, "approve.inbox", "approve.inbox:read")?;
@@ -1610,9 +1871,9 @@ async fn tabs(f: &Face, abilities: &[String], person: &str) -> TabsOut {
     let mut tabs = Vec::new();
     for t in rows {
         let b = if t.system == "APPROVALS" { badge(person, abilities).await } else { None };
-        tabs.push(TabOut { view: view_of(&t.route).map(String::from), system: t.system, title: t.title, route: t.route, badge: b });
+        tabs.push(TabOut { view: view_of(&t.route).map(String::from), href: href_of(&t.route).map(String::from), system: t.system, title: t.title, route: t.route, badge: b });
     }
-    TabsOut { person: person.into(), here: f.route.clone(), tabs, at_ms: ui_chain::now_ms() }
+    TabsOut { person: person.into(), here: f.route.clone(), views: extra_views(abilities, &f.route), notes: ARCH_FACES.contains(&f.route.as_str()).then(|| notes_cell(abilities)).flatten().map(String::from), tabs, at_ms: ui_chain::now_ms() }
 }
 
 async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[String]) -> (&'static str, Vec<u8>) {
@@ -1781,7 +2042,11 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
     // the one POST: the Feed data relay (JSON in, JSON out; a cross-site form cannot send application/json)
     // and the Conversations relay (ai.session List, Get, Read), on the face of /conversations/ only
     let relay = method == "POST" && (route.starts_with("/api/cell/feed.view/") || (route.starts_with("/api/cell/ai.session/") && f.route == "/conversations/"));
-    if method != "GET" && !is_head && !relay {
+    // the Architecture relays (arch.map, and arch.notes for the notes strip), on the Core and Architecture faces
+    let arch_face = ARCH_FACES.contains(&f.route.as_str());
+    let arch_relay_req = method == "POST" && route.starts_with("/api/cell/arch.map/") && arch_face;
+    let notes_req = method == "POST" && route.starts_with("/api/cell/arch.notes/") && arch_face;
+    if method != "GET" && !is_head && !relay && !arch_relay_req && !notes_req {
         return reply(&mut s, "405 Method Not Allowed", "text/plain", b"", false).await;
     }
     if route == "/" || route == "/index.html" || route.starts_with("/o/") {
@@ -1804,6 +2069,30 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         let t = tabs(&f, &ab, &person).await;
         eprintln!("apps-shell: {person} {}: {} tab(s)", f.route, t.tabs.len());
         return reply(&mut s, "200 OK", "application/json", &json(&t), is_head).await;
+    }
+    if arch_relay_req || notes_req {
+        let op = route.strip_prefix(if notes_req { "/api/cell/arch.notes/" } else { "/api/cell/arch.map/" }).unwrap_or("");
+        if !covers(&ab, "arch.map:see") {
+            return reply(&mut s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await;
+        }
+        let low = head.to_ascii_lowercase();
+        let len: usize = low.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        let json_ct = low.lines().any(|l| l.starts_with("content-type:") && l.contains("application/json"));
+        if !json_ct || len > FEED_BODY_MAX {
+            return reply(&mut s, "400 Bad Request", "application/json", b"{\"error\":\"want application/json, at most 64 KB\"}", false).await;
+        }
+        let at = buf.windows(4).position(|x| x == b"\r\n\r\n").map_or(buf.len(), |i| i + 4);
+        let mut body = buf[at..].to_vec();
+        while body.len() < len {
+            let mut chunk = [0u8; 4096];
+            match tokio::time::timeout(Duration::from_secs(20), s.read(&mut chunk)).await {
+                Ok(Ok(n)) if n > 0 => body.extend_from_slice(&chunk[..n]),
+                _ => return,
+            }
+        }
+        body.truncate(len);
+        let (st, out) = if notes_req { notes_relay(&person, &ab, op, &body).await } else { arch_relay(&person, &ab, op, &body).await };
+        return reply(&mut s, st, "application/json", &out, false).await;
     }
     if relay {
         let live = f.live.read().await.clone();
@@ -1837,6 +2126,8 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
         let live = f.live.read().await.clone();
         let has = tabs_for(&ab, &live, ui_chain::now_ms()).iter().any(|t| t.route == "/feed/");
         let hit = has.then(|| BUNDLES.get().and_then(|m| m.lock().unwrap().get(sha).cloned())).flatten();
+        // or the Architecture module, only for a viewer who holds arch.map:see
+        let hit = hit.or_else(|| covers(&ab, "arch.map:see").then(|| ARCH_BUNDLES.get().and_then(|m| m.lock().unwrap().get(sha).cloned())).flatten());
         return match hit {
             Some(b) => reply_cached(&mut s, "200 OK", "text/javascript; charset=utf-8", &b, is_head, "private, max-age=31536000, immutable").await,
             None => reply(&mut s, "404 Not Found", "text/plain", b"no such file", is_head).await,
@@ -1851,6 +2142,20 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
                 Ok((_, b)) => reply(&mut s, "200 OK", "text/javascript; charset=utf-8", &b, is_head).await,
                 Err(e) => {
                     eprintln!("apps-shell: the Feed view for {person}: {e}");
+                    reply(&mut s, "503 Service Unavailable", "text/plain", b"not answering", is_head).await
+                }
+            };
+        }
+        let arch_open = match f.route.as_str() {
+            "/core/" => extra_views(&ab, &f.route).iter().any(|v| v == "architecture"),
+            "/architecture/" => covers(&ab, "arch.map:see"),
+            _ => false,
+        };
+        if name == "v/architecture.js" && arch_open {
+            return match arch_bundle(&person, &ab).await {
+                Ok((_, b)) => reply(&mut s, "200 OK", "text/javascript; charset=utf-8", &b, is_head).await,
+                Err(e) => {
+                    eprintln!("apps-shell: the Architecture view for {person}: {e}");
                     reply(&mut s, "503 Service Unavailable", "text/plain", b"not answering", is_head).await
                 }
             };
@@ -1893,7 +2198,7 @@ async fn serve() -> Result<(), String> {
     tokio::spawn(liveness(live.clone()));
     let person_key: PathBuf = env_or("CE_GATE_PERSON_KEY", format!("{}/.config/work-show/person-key", home())).into();
     let people: PathBuf = env_or("APPS_SHELL_PEOPLE", format!("{}/.config/apps-shell/people.json", home())).into();
-    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/,127.0.0.1:8886=/conversations/".into()).split(',') {
+    for pair in env_or("APPS_SHELL_HTTP", "127.0.0.1:8881=/approvals/,127.0.0.1:8882=/core/,127.0.0.1:8883=/search/,127.0.0.1:8884=/feed/,127.0.0.1:8885=/home/,127.0.0.1:8886=/conversations/,127.0.0.1:8887=/architecture/".into()).split(',') {
         let (addr, route) = pair.split_once('=').ok_or_else(|| format!("APPS_SHELL_HTTP: {pair}: want <addr>=<route>"))?;
         let f = Arc::new(Face { route: route.into(), live: live.clone(), person_key: person_key.clone(), people: people.clone() });
         let addr = addr.to_string();
@@ -1992,6 +2297,35 @@ mod contracts {
             assert!(ops.iter().any(|(_, n)| n == op), "{op}");
         }
         assert!(!super::FEED_OPS.contains(&"Ui") && !super::FEED_OPS.contains(&"Compare"));
+    }
+    /// arch.map major 1 as repo:arch-map crates/arch-map-api has it (f5dc421, frozen whole): another hash and every call
+    /// is refused as another api. The relay passes the internal reads (slice 1), the demo reads and Changes (slice 2);
+    /// never Ui (served as /v/architecture.js) nor the curate ops.
+    #[test]
+    fn copied_arch_map_contract_matches_the_cell() {
+        use ce_wire::Api;
+        assert_eq!(<super::arch_map_api::ArchMap as Api>::SCHEMA, 0x934e4e8a827ab7ab);
+        let ops: Vec<&str> = super::arch_map_api::ArchMap::OPS.iter().map(|o| o.name).collect();
+        assert_eq!(ops.len(), 14);
+        for op in super::ARCH_OPS {
+            assert!(ops.contains(op), "{op}");
+        }
+        assert_eq!(super::ARCH_OPS, &["GraphFull", "DetailFull", "Sources", "Graph", "Detail", "Story", "Progress", "Changes"]);
+        for no in ["Ui", "Import", "PutAlias", "PutStory", "HealthOp"] {
+            assert!(!super::ARCH_OPS.contains(&no), "{no}");
+        }
+    }
+    /// arch.notes major 1 as repo:arch-notes 534c49f froze it; the notes relay passes Put, List and Close only, each
+    /// needing the viewer's own right (Take and Watch are the lanes').
+    #[test]
+    fn copied_arch_notes_contract_matches_the_cell() {
+        use ce_wire::Api;
+        assert_eq!(<super::arch_notes_api::ArchNotes as Api>::SCHEMA, 0xa4dc01ad901bfcda);
+        let ops: Vec<&str> = super::arch_notes_api::ArchNotes::OPS.iter().map(|o| o.name).collect();
+        for (op, _) in apps_shell::NOTES_OPS {
+            assert!(ops.contains(op), "{op}");
+        }
+        assert_eq!(apps_shell::NOTES_OPS, &[("Put", "arch.notes:write"), ("List", "arch.notes:read"), ("Close", "arch.notes:write")]);
     }
     #[test]
     fn copied_cell_and_crm_contracts_match_the_live_cells() {

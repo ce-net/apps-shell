@@ -46,6 +46,10 @@ pub const GRANT: &[&str] = &[
     "wire.ws-door:mint-for:home.shell",
     "wire.ws-door:mint-for:feed.view",
     "wire.ws-door:mint-for:ai.session",
+    // the Architecture view under Core (/core/?view=architecture): arch.map's Ui and its internal reads, each as the viewer
+    "wire.ws-door:mint-for:arch.map",
+    // the notes strip of the Architecture view: arch.notes Put, List, Close, as the viewer with their author caveat
+    "wire.ws-door:mint-for:arch.notes",
     "approve.inbox:health",
     "site.cellmap:health",
     "foreman.shell:health",
@@ -55,16 +59,15 @@ pub const GRANT: &[&str] = &[
     "state.store:read",
     "feed.view:health",
     "ai.session:health",
-    // the ARCHITECTURE tab's shell (repo:ce-net-net 1fde9d1): asked for health like every tab shell; this build carries
-    // no arch.map contract yet, so its tab stays down here until one does
     "arch.map:health",
+    "arch.notes:health",
     "delegate:1",
 ];
 
 /// The cells whose rights a viewer grant may carry (what [`GRANT`] lets wire.ws-door mint).
 pub const DATA_CELLS: &[&str] = &[
     "approve.inbox", "site.cellmap", "search.hybrid", "search.mesh", "ref.resolve", "ref.pin", "cell.search", "crm.people", "crm.promises", "crm.calls",
-    "open.with", "home.shell", "feed.view", "ai.session",
+    "open.with", "home.shell", "feed.view", "ai.session", "arch.map", "arch.notes",
 ];
 
 /// The abilities of the viewer grant to mint for these abilities: only the data cells' (row caveats kept), sorted.
@@ -288,12 +291,45 @@ pub fn all_tabs() -> Vec<(&'static str, Tab)> {
     CE_NET.tabs()
 }
 
+/// The views a tab hosts besides its own (`<route>?view=<name>`), each opened only to a viewer who holds its right, its
+/// module the cell's own (`GET /v/<name>.js` asks that cell's `Ui` as the viewer). The Architecture view lives under Core
+/// until it has its own route (repo:ce/docs/ARCHITECTURE-ATLAS-APP-2026-11-18.md 7.3, slices 1 to 4).
+pub const EXTRA_VIEWS: &[(&str, &str, &str)] = &[("/core/", "architecture", "arch.map:see")];
+
+/// The faces that serve the Architecture view, its module and its relays: Core (`?view=architecture`) and its own
+/// route (face 8887). Both stay until Core's `?view=` is retired, 14 days after the gate route is live.
+pub const ARCH_FACES: &[&str] = &["/core/", "/architecture/"];
+
+/// Tabs whose route the apps.ce-net.com gate does not serve yet, and where their view opens meanwhile. The
+/// Architecture tab (ce-net-net ARCHITECTURE) is listed once arch.map answers; its link opens the view under Core
+/// until the gate's quiet window adds `/architecture/` (repo:ce/docs/ARCHITECTURE-ATLAS-APP-2026-11-18.md 7.4).
+pub const NOT_ROUTED_YET: &[(&str, &str)] = &[("/architecture/", "/core/?view=architecture")];
+
+pub fn href_of(route: &str) -> Option<&'static str> {
+    NOT_ROUTED_YET.iter().find(|(r, _)| *r == route).map(|(_, h)| *h)
+}
+
+/// The notes cell the Architecture view may write to for this viewer: only with `arch.notes:write`.
+pub fn notes_cell(abilities: &[String]) -> Option<&'static str> {
+    covers(abilities, "arch.notes:write").then_some("arch.notes")
+}
+
+/// The ops of the notes relay and the right each needs of the viewer.
+pub const NOTES_OPS: &[(&str, &str)] = &[("Put", "arch.notes:write"), ("List", "arch.notes:read"), ("Close", "arch.notes:write")];
+
+/// The extra views of `route` this viewer may open: their names.
+pub fn extra_views(abilities: &[String], route: &str) -> Vec<String> {
+    EXTRA_VIEWS.iter().filter(|(r, _, need)| *r == route && covers(abilities, need)).map(|(_, n, _)| n.to_string()).collect()
+}
+
 /// The view module this gateway serves for a tab route (only the tabs whose views live in this site).
 pub fn view_of(route: &str) -> Option<&'static str> {
     match route {
         "/home/" => Some("v/home.js"),
         "/approvals/" => Some("v/approvals.js"),
         "/core/" => Some("v/core.js"),
+        // the module is arch.map's own (its Ui as the viewer), never a file of this site
+        "/architecture/" => Some("v/architecture.js"),
         "/search/" => Some("v/search.js"),
         // not a file of this site: the module the feed cell ships (`GET /v/feed.js` asks its `Ui`)
         "/feed/" => Some("v/feed.js"),

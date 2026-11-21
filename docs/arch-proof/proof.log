@@ -1,0 +1,41 @@
+# arch proof 2026-11-21T05:58:30Z on foreman-ops-1, through https://apps.ce-net.com (gate on foreman-ops-1), test sessions via=test
+## ce cell call arch.notes List cell:site.cellmap@1 open_only
+[
+  {
+    "at": {
+      "ms": 1795240183658,
+      "n": 0
+    },
+    "author": "t-arch-owner",
+    "closed_at": null,
+    "id": "bd91ab932c27755b",
+    "section": null,
+    "state": "Open",
+    "taken_by": null,
+    "target": "cell:site.cellmap@1",
+    "text": "Drift column: name the commit each node runs, not only that they differ (proof note, t-arch-owner)"
+  }
+]
+## GraphFull Systems root system:CORE: nodes with notes
+seq 11 [('cell:site.cellmap@1', 1)]
+## page: Save -> notes 1 on the node: 4327 ms (page-record until, arch2-owner-1440)
+## t-arch-owner
+tabs [('Architecture', '/architecture/', '/core/?view=architecture'), ('Core', '/core/', None)] views ['architecture'] notes arch.notes
+GET v/architecture.js 200
+POST arch.notes/List 200  1 rows
+POST arch.map/GraphFull 200  nodes 190 seq 11
+POST arch.map/Changes 200  delta seq 11 put 20
+## t-arch-see
+tabs [('Architecture', '/architecture/', '/core/?view=architecture'), ('Core', '/core/', None)] views ['architecture'] notes None
+GET v/architecture.js 200
+POST arch.notes/Put 403  refused
+POST arch.notes/List 403  refused
+POST arch.map/GraphFull 403  refused
+POST arch.map/Changes 403  refused
+## t-arch-stranger
+tabs [('Core', '/core/', None)] views [] notes None
+GET v/architecture.js 404
+POST arch.notes/Put 403  refused
+POST arch.notes/List 403  refused   (first try: curl 000, no answer in the 40 s window; asked again twice: 403 in 0.07 s)
+POST arch.map/GraphFull 403  refused
+POST arch.map/Changes 403  refused

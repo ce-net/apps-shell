@@ -14,6 +14,10 @@ export function mount(root, host) {
     const pending = p.ok ? p.data : null;
     if (stop) return;
     const head = [h('div', { class: 'crumb' }, 'ce / ', h('b', {}, 'Core'), ' / cells'), h('h1', { class: 'display' }, 'Core cells.')];
+    // the Architecture view, for a viewer who may open it (tabs.json views)
+    if ((host.views || []).includes('architecture')) head.push(h('div', { class: 'glass list sys' }, h('div', { class: 'row' },
+      h('div', {}, h('div', { class: 'l' }, 'Architecture'), h('div', { class: 'm' }, 'the whole network drawn from what its cells report: layers, systems, machines')),
+      h('div', { class: 'r' }, h('a', { class: 'btn', href: '?view=architecture' }, 'Open')))));
     if (!r.ok) { el.replaceChildren(...head, h('p', { class: 'note' }, 'The cell map is not answering; trying again.')); timer = setTimeout(run, 5000); return; }
     const m = r.data;
     const cells = m.systems.flatMap(s => s.cells);

@@ -273,3 +273,61 @@ fn the_conversations_tab_needs_ai_session_list_and_goes_when_ai_session_stops() 
         }
     }
 }
+
+/// The Architecture view under Core: open only to a viewer holding `arch.map:see`; its tab opens it there until the gate
+/// routes /architecture/, and
+/// the shell's own grant gains exactly the arch.map mint and its health.
+#[test]
+fn the_architecture_view_opens_under_core_with_arch_map_see() {
+    assert_eq!(extra_views(&s(&["arch.map:see"]), "/core/"), ["architecture"]);
+    assert_eq!(extra_views(&s(&["arch.map:see", "arch.map:internal"]), "/core/"), ["architecture"]);
+    assert!(extra_views(&s(&["arch.map:internal"]), "/core/").is_empty(), "internal alone does not open the view");
+    assert!(extra_views(&s(&["site.cellmap:read"]), "/core/").is_empty());
+    assert!(extra_views(&s(&["arch.map:see"]), "/search/").is_empty(), "only under Core");
+    let arch: Vec<&&str> = GRANT.iter().filter(|g| g.contains(":arch.") || g.starts_with("arch.")).collect();
+    assert_eq!(arch, [&"wire.ws-door:mint-for:arch.map", &"wire.ws-door:mint-for:arch.notes", &"arch.map:health", &"arch.notes:health"]);
+    let g = viewer_grant(&s(&["arch.map:see", "arch.map:internal", "arch.map:*", "site.cellmap:read"]));
+    assert_eq!(g, s(&["arch.map:internal", "arch.map:see", "site.cellmap:read"]));
+    // its tab (ce-net-net ARCHITECTURE) is the only one a viewer holding only the view's rights gets, and it opens the
+    // view under Core while the gate has no /architecture/ route
+    let now = 1_000_000;
+    let t = tabs_for(&s(&["arch.map:see", "arch.map:internal"]), &all_live(now), now);
+    assert_eq!(t.iter().map(|t| t.route.as_str()).collect::<Vec<_>>(), ["/architecture/"]);
+    assert_eq!(href_of("/architecture/"), Some("/core/?view=architecture"));
+    assert_eq!(view_of("/architecture/"), Some("v/architecture.js"));
+    assert!(href_of("/core/").is_none());
+    let site = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site/v/architecture.js");
+    assert!(!site.exists(), "the Architecture module is arch.map's, served from its Ui, not from site/");
+}
+
+#[test]
+fn no_file_of_the_site_names_the_arch_map_cell() {
+    fn walk(d: &std::path::Path, hits: &mut Vec<String>) {
+        for e in std::fs::read_dir(d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, hits);
+            } else if let Ok(t) = std::fs::read_to_string(&p) {
+                if t.contains("arch.map") {
+                    hits.push(p.display().to_string());
+                }
+            }
+        }
+    }
+    let mut hits = vec![];
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../site"), &mut hits);
+    assert!(hits.is_empty(), "{hits:?}");
+}
+
+/// The notes strip: mounted (tabs.json `notes`) only for a viewer holding arch.notes:write; the relay's ops and rights.
+#[test]
+fn the_notes_strip_is_for_writers_only() {
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+    assert_eq!(notes_cell(&s(&["arch.map:see", "arch.notes:write", "arch.notes:read"])), Some("arch.notes"));
+    assert_eq!(notes_cell(&s(&["arch.map:see", "arch.notes:read"])), None);
+    assert_eq!(notes_cell(&s(&["arch.map:see"])), None);
+    assert!(for_cell(&s(&["arch.map:see"]), "arch.notes", "arch.notes:write").is_none(), "a see-only viewer is refused before any cell is asked");
+    let g = viewer_grant(&s(&["arch.notes:write", "arch.notes:read", "arch.map:see"]));
+    assert_eq!(g, s(&["arch.map:see", "arch.notes:read", "arch.notes:write"]));
+    assert!(ARCH_FACES.contains(&"/core/") && ARCH_FACES.contains(&"/architecture/"));
+}

@@ -309,8 +309,25 @@ function say(crumb, title, line, link) {
 // answer, onDelta(null, error) for a failure, then retries with backoff; returns stop().
 // open(target): through host.open of the ce-net browser (open.with, the pane); never a URL.
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-function hostFor(view, tab) {
+function hostFor(view, tab, notes) {
   const host = { h, tab };
+  // the notes of a view that asks for them (view.notes), for a viewer who may write them (tabs.json `notes` names the
+  // cell, only then): Put, List and Close through this site's relay, as the viewer
+  if (view && view.notes === true && typeof notes === 'string' && /^[a-z0-9.-]+$/.test(notes)) {
+    host.notes = {
+      call: async (op, req) => {
+        if (!/^[A-Za-z]{1,32}$/.test(op)) throw new Error('bad op');
+        let r;
+        try {
+          r = await fetch('api/cell/' + notes + '/' + op, { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', cache: 'no-store', body: JSON.stringify(req == null ? null : req) });
+        } catch (e) { throw Object.assign(new Error('no connection'), { status: 0 }); }
+        let body = null;
+        try { body = await r.json(); } catch (_) {}
+        if (!r.ok) throw Object.assign(new Error((body && body.error) || 'HTTP ' + r.status), { status: r.status, refused: r.status === 403 });
+        return body;
+      },
+    };
+  }
   if (!view || typeof view.cell !== 'string' || !/^[a-z0-9.-]+$/.test(view.cell)) return host;
   const cell = view.cell;
   const call = async (op, req, signal) => {
@@ -372,10 +389,13 @@ async function tick() {
   if (!r.ok) return;
   const d = await r.json();
   here = d.here; tabsNow = d.tabs;
-  const key = JSON.stringify(d.tabs.map(t => [t.route, t.title, t.badge]));
+  // a tab whose route the gate does not serve yet carries `href`: where its view opens meanwhile (under another tab)
+  const at = location.pathname + location.search;
+  const cur = t => t.href ? at === t.href : t.route === d.here && !d.tabs.some(x => x.href && at === x.href);
+  const key = JSON.stringify(d.tabs.map(t => [t.route, t.href, t.title, t.badge, cur(t)]));
   if (key !== last) {
     last = key;
-    rail.replaceChildren(...d.tabs.map(t => h('a', { href: t.route, 'aria-current': t.route === d.here ? 'page' : false },
+    rail.replaceChildren(...d.tabs.map(t => h('a', { href: t.href || t.route, 'aria-current': cur(t) ? 'page' : false },
       icon(), t.title, t.badge ? h('span', { class: 'bdg' }, t.badge) : null)));
   }
   if (first) {
@@ -393,14 +413,24 @@ async function tick() {
     return;
   }
   delete main.dataset.closed;
-  if (mounted && mounted.view === tab.view) return;
+  // an extra view this tab hosts (`?view=<name>`, tabs.json `views`): only one this viewer may open; its module is the
+  // cell's own and gets that cell's relay
+  const want = new URLSearchParams(location.search).get('view');
+  const extra = want && /^[a-z]{1,32}$/.test(want) && (d.views || []).includes(want) ? "v/" + want + ".js" : null;
+  if (want && !extra) {
+    if (mounted || !main.dataset.closed) { if (mounted) { mounted.stop(); mounted = null; } say(tab.title.toLowerCase(), 'Not open here.', 'This view is not open to you. Ask for access, and it opens here when it is granted.'); main.dataset.closed = '1'; }
+    return;
+  }
+  const path = extra || tab.view;
+  if (mounted && mounted.view === path) return;
   if (mounted) { mounted.stop(); mounted = null; }
-  const mod = await import('../' + tab.view);
+  let mod;
+  try { mod = await import('../' + path); } catch (_) { return say(tab.title.toLowerCase(), 'Not answering.', 'This view did not load; trying again.'); }
   main.replaceChildren();
   // a tab view of this site gets its own ops; a module a cell ships (view = { cell }) gets that cell's relay
-  const host = TAB_OPS[tab.view] ? makeHost(TAB_OPS[tab.view], { tab }) : hostFor(mod.view, tab);
+  const host = !extra && TAB_OPS[path] ? makeHost(TAB_OPS[path], { tab, views: d.views || [] }) : hostFor(mod.view, tab, d.notes);
   const stop = mod.mount(main, host);
-  mounted = { view: tab.view, stop: typeof stop === 'function' ? stop : () => {} };
+  mounted = { view: path, stop: typeof stop === 'function' ? stop : () => {} };
 }
 
 tick();
