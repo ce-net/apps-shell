@@ -348,9 +348,9 @@ mod door_api {
     }
 }
 
-/// ai.session's contract (repo:ai-session crates/ai-session-api, major 1), copied verbatim like feed_view_api: its doc
-/// comments are part of the schema hash (0xb35024aa61e4992c, pinned by a test), so not a character may change. The
-/// Conversations tab relays List, Get and Read only (CONV_OPS).
+/// ai.session's contract (repo:ai-session crates/ai-session-api at ce6eef1, major 1), copied verbatim like
+/// feed_view_api: its doc comments are part of the schema hash (0x711b33ac59622d2b, pinned by a test), so not a
+/// character may change. The Conversations tab relays only the ops of AI_OPS, and Events as server-sent events.
 #[allow(dead_code)]
 mod ai_session_api {
     ce_wire::api! {
@@ -420,6 +420,17 @@ mod ai_session_api {
             /// Run each named adapter's read-only `Import` (empty = every enabled provider with an import source).
             pub struct ImportRunReq { pub providers: Vec<String>, pub since_ms: Option<u64> }
             pub struct Imported { pub seen: u32, pub new: u32, pub updated: u32, pub skipped: u32, pub by_source: Vec<Count>, pub refs: Vec<Ref> }
+            /// An agent's profile as a row (`prof`, key `<tenant>/<name>`; AAC slice 5, migration doc section 1). `system`
+            /// and `settings` are ce-refs (`inline:` or `file:<absolute path>` today): the agent's whole prompt and its Claude
+            /// Code settings file (hooks). `Open{profile: <name>}` resolves the row; the profile decides provider, harness,
+            /// system, settings and tools, the request may narrow account, model and budget.
+            pub struct Profile { pub name: String, pub system: Option<String>, pub tools: Vec<ToolGrant>, pub harness: Harness, pub settings: Option<String>, pub provider: String, pub account: Option<String>, pub model: Option<String>, pub budget: Budget }
+            pub struct ProfileKey { pub name: String }
+            /// `Ask` (section 12.1): `Open` + `Send{wait: true}` + `Close` in one call, one row of kind `ask`; `keep: true`
+            /// leaves it open to continue. No `provider` = claude.terminal. Its own right, so a grant can allow one-shot
+            /// questions without long sessions.
+            pub struct AskReq { pub text: String, pub attachments: Vec<String>, pub provider: Option<ProviderPick>, pub model: Option<String>, pub account: Option<String>, pub system: Option<String>, pub profile: Option<String>, pub expect: Option<String>, pub budget: Budget, pub keep: bool }
+            pub struct Asked { pub conversation: String, pub message: Message, pub usage: Usage, pub refs: Vec<Ref> }
         }
         ops {
             1 => HealthOp(()) -> Health, needs "ai.session:health";
@@ -437,6 +448,13 @@ mod ai_session_api {
             13 => ConfigEnable(ConfigKey) -> Result<ProviderConfig, Refusal>, needs "ai.session:config.write";
             14 => ConfigDisable(ConfigOff) -> Result<ProviderConfig, Refusal>, needs "ai.session:config.write";
             15 => ImportRun(ImportRunReq) -> Result<Imported, Refusal>, needs "ai.session:import", deadline_ms 3600000;
+            // slice 3 from the tab (additive; ce docs/AI-AS-CELLS-2026-11-18.md section 12.1)
+            17 => Continue(ConvReq) -> Result<Opened, Refusal>, needs "ai.session:send", deadline_ms 120000;
+            18 => Ask(AskReq) -> Result<Asked, Refusal>, needs "ai.session:ask", deadline_ms 1800000;
+            // profile rows (additive; 30.. so the import and schedule ops keep 16..29)
+            30 => ProfilePut(Profile) -> Result<Profile, Refusal>, needs "ai.session:profile.write";
+            31 => ProfileGet(ProfileKey) -> Result<Profile, Refusal>, needs "ai.session:profile.read";
+            32 => ProfileList(()) -> Result<Vec<Profile>, Refusal>, needs "ai.session:profile.read";
         }
         streams {
             20 => Events(ConvReq) -> stream Event, needs "ai.session:read";
@@ -1991,23 +2009,30 @@ async fn api(f: &Face, person: &str, route: &str, path: &str, abilities: &[Strin
     }
 }
 
-/// The ops the Conversations relay passes (slice 2 of ce docs/AI-AS-CELLS-2026-11-18.md: read only), and nothing else.
-const CONV_OPS: &[&str] = &["List", "Get", "Read"];
-
-/// `POST /api/cell/ai.session/<Op>`: List, Get or Read as the viewer (JSON in, JSON out), with a grant wire.ws-door
-/// minted for their own `ai.session:*` rights, so ai.session's gate decides and its tenant rule cuts the rows.
+/// `POST /api/cell/ai.session/<Op>`: an op of AI_OPS as the viewer (JSON in, JSON out), with a grant wire.ws-door
+/// minted for their own `ai.session:*` rights, so ai.session's gate decides and its tenant rule cuts the rows. The
+/// request is checked first (`apps_shell::ai_check`: Bare harness only, Send never waits).
 async fn conv_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -> (&'static str, Vec<u8>) {
     use ai_session_api::*;
     let err = |st: &'static str, m: String| (st, json(&serde_json::json!({ "error": m.chars().take(300).collect::<String>() })));
-    if !CONV_OPS.contains(&op) {
-        return err("404 Not Found", "no such op".into());
+    let Some(need) = apps_shell::ai_need(op).filter(|_| op != "Events") else { return err("404 Not Found", "no such op".into()) };
+    let mut v: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(x) => return err("400 Bad Request", format!("body: {x}")),
+    };
+    if let Err(e) = apps_shell::ai_check(op, &mut v) {
+        return err("400 Bad Request", e);
     }
-    let need = if op == "List" { "ai.session:list" } else { "ai.session:read" };
-    let Some(ab) = for_cell(abilities, "ai.session", need) else { return err("403 Forbidden", "refused".into()) };
+    let Some(ab) = apps_shell::for_cell(abilities, "ai.session", need) else { return err("403 Forbidden", "refused".into()) };
     let c = match client::<AiSession>(person, &ab).await {
         Ok(mut c) => {
-            // Read of an imported row reads the transcript on its node (one adapter call)
-            c.deadline = Duration::from_secs(25);
+            // Read of an imported row reads the transcript on its node (one adapter call); Open and Fork start a
+            // session; Ask waits for its answer
+            c.deadline = Duration::from_secs(match op {
+                "Ask" => 300,
+                "Open" | "Fork" | "Continue" => 60,
+                _ => 25,
+            });
             c
         }
         Err(e) if e == "refused" => return err("403 Forbidden", "refused".into()),
@@ -2020,6 +2045,8 @@ async fn conv_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -
             Ok(Err(Refusal::NotFound(m))) => e("404 Not Found", m),
             Ok(Err(Refusal::Invalid(m))) | Ok(Err(Refusal::Shape(m))) => e("400 Bad Request", m),
             Ok(Err(Refusal::Denied { .. })) => e("403 Forbidden", "refused".into()),
+            Ok(Err(Refusal::Busy)) => e("409 Conflict", "busy: a turn is running, or a live process holds this conversation".into()),
+            Ok(Err(Refusal::Policy { reason })) => e("409 Conflict", reason),
             Ok(Err(Refusal::NoPath(m))) => e("502 Bad Gateway", m),
             Ok(Err(x)) => e("502 Bad Gateway", format!("{x:?}")),
             Err(ce_wire::WireError::Refused(_)) => e("403 Forbidden", "refused".into()),
@@ -2028,7 +2055,7 @@ async fn conv_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -
     }
     macro_rules! call_op {
         ($op:ty) => {{
-            match serde_json::from_slice(body) {
+            match serde_json::from_value(v) {
                 Ok(req) => out(c.call::<$op>(&req).await),
                 Err(x) => err("400 Bad Request", format!("body: {x}")),
             }
@@ -2037,8 +2064,72 @@ async fn conv_relay(person: &str, abilities: &[String], op: &str, body: &[u8]) -
     match op {
         "List" => call_op!(List),
         "Get" => call_op!(Get),
-        _ => call_op!(Read),
+        "Read" => call_op!(Read),
+        "Open" => call_op!(Open),
+        "Send" => call_op!(Send),
+        "Continue" => call_op!(Continue),
+        "Fork" => call_op!(Fork),
+        "Interrupt" => call_op!(Interrupt),
+        "Close" => call_op!(Close),
+        _ => call_op!(Ask),
     }
+}
+
+/// `GET /api/cell/ai.session/Events?conversation=<id>`: one conversation's live events as server-sent events, over one
+/// ce-wire stream opened as the viewer. A viewer who may not read the row gets 403 or 404 before any stream is opened
+/// (Get first). Each event is one `data:` line of the Event's JSON; a comment line every 15 s keeps the connection; it
+/// ends when the conversation closes, the cell ends the stream, the page goes away, or after 30 minutes. Reconnect:
+/// Read from the last turn the page holds, then Events again.
+async fn conv_events(s: &mut TcpStream, person: &str, abilities: &[String], path: &str) {
+    use ai_session_api::*;
+    use tokio::io::AsyncWriteExt;
+    let Some(conversation) = query_text(path, "conversation").filter(|c| !c.is_empty() && c.len() <= 128 && c.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))) else {
+        return reply(s, "400 Bad Request", "application/json", b"{\"error\":\"conversation=<id>\"}", false).await;
+    };
+    let Some(ab) = apps_shell::for_cell(abilities, "ai.session", "ai.session:read") else { return reply(s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await };
+    let c = match client::<AiSession>(person, &ab).await {
+        Ok(c) => c,
+        Err(e) if e == "refused" => return reply(s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await,
+        Err(e) => return reply(s, "503 Service Unavailable", "application/json", &json(&serde_json::json!({ "error": e })), false).await,
+    };
+    let req = ConvReq { conversation };
+    match c.call::<Get>(&req).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(Refusal::NotFound(_))) => return reply(s, "404 Not Found", "application/json", b"{\"error\":\"no such conversation\"}", false).await,
+        Ok(Err(_)) | Err(ce_wire::WireError::Refused(_)) => return reply(s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await,
+        Err(e) => return reply(s, "503 Service Unavailable", "application/json", &json(&serde_json::json!({ "error": e.to_string() })), false).await,
+    }
+    let mut st = match c.subscribe::<Events>(&req) {
+        Ok(st) => st,
+        Err(ce_wire::WireError::Refused(_)) => return reply(s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await,
+        Err(e) => return reply(s, "503 Service Unavailable", "application/json", &json(&serde_json::json!({ "error": e.to_string() })), false).await,
+    };
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Accel-Buffering: no\r\nX-Content-Type-Options: nosniff\r\nVary: X-Ce-Person\r\nConnection: close\r\n\r\nretry: 3000\n\n";
+    if s.write_all(head.as_bytes()).await.is_err() {
+        return;
+    }
+    let until = tokio::time::Instant::now() + Duration::from_secs(1800);
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(15), st.next());
+        let line = match tokio::time::timeout_at(until, next).await {
+            Err(_) => break,
+            Ok(Err(_)) => ": keep\n\n".to_string(),
+            Ok(Ok(Some(Ok(e)))) => {
+                let end = matches!(e, Event::State(State::Closed));
+                let l = format!("data: {}\n\n", String::from_utf8_lossy(&json(&e)));
+                if s.write_all(l.as_bytes()).await.is_err() || end {
+                    return;
+                }
+                continue;
+            }
+            Ok(Ok(Some(Err(e)))) => format!("event: error\ndata: {}\n\n", serde_json::json!({ "error": e.to_string() })),
+            Ok(Ok(None)) => break,
+        };
+        if s.write_all(line.as_bytes()).await.is_err() || line.starts_with("event: error") {
+            return;
+        }
+    }
+    let _ = s.write_all(b"event: end\ndata: {}\n\n").await;
 }
 
 /// `POST /api/cell/term.session/<Op>` on the Conversations face: a tmux row opened live, on the node that holds the
@@ -2372,6 +2463,13 @@ async fn one(f: Arc<Face>, mut s: TcpStream) {
             None => reply(&mut s, "404 Not Found", "text/plain", b"no such file", is_head).await,
         };
     }
+    if route == "/api/cell/ai.session/Events" && method == "GET" && f.route == "/conversations/" {
+        let live = f.live.read().await.clone();
+        if !tabs_for(&ab, &live, ui_chain::now_ms()).iter().any(|t| t.route == "/conversations/") {
+            return reply(&mut s, "403 Forbidden", "application/json", b"{\"error\":\"refused\"}", false).await;
+        }
+        return conv_events(&mut s, &person, &ab, &path).await;
+    }
     if route.starts_with("/api/") {
         let (st, body) = api(&f, &person, &route, &path, &ab).await;
         return reply(&mut s, st, "application/json", &body, is_head).await;
@@ -2484,12 +2582,16 @@ mod contracts {
     /// the cell's door, so this pins it; the relay passes the three read ops only.
     fn copied_ai_session_contract_matches_the_cell() {
         use ce_wire::Api;
-        assert_eq!(<super::ai_session_api::AiSession as Api>::SCHEMA, 0xb35024aa61e4992c);
+        assert_eq!(<super::ai_session_api::AiSession as Api>::SCHEMA, 0x711b33ac59622d2b);
         let ops: Vec<&str> = super::ai_session_api::AiSession::OPS.iter().map(|o| o.name).collect();
-        for op in super::CONV_OPS {
+        let names: Vec<&str> = apps_shell::AI_OPS.iter().map(|(o, _)| *o).collect();
+        for op in &names {
             assert!(ops.contains(op), "{op}");
         }
-        assert_eq!(super::CONV_OPS, &["List", "Get", "Read"], "slice 2 is read only: no Open, Send, Fork, Import or Config op");
+        for never in ["ConfigList", "ConfigGet", "ConfigPut", "ConfigEnable", "ConfigDisable", "ImportRun", "ProfilePut", "ProfileGet", "ProfileList", "Rehome"] {
+            assert!(!names.contains(&never), "{never} is never passed from a page");
+        }
+        assert_eq!(names, ["List", "Get", "Read", "Events", "Open", "Send", "Continue", "Fork", "Interrupt", "Close", "Ask"]);
     }
 
     /// term.session major 1 as repo:term-session crates/term-session-api has it (its own test pins the same

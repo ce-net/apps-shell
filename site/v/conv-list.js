@@ -58,7 +58,7 @@ export async function livePanes(host, nodes) {
   return per.flat();
 }
 
-export function mountList(root, host, { onOpen }) {
+export function mountList(root, host, { onOpen, onOpened }) {
   const { h } = host;
   let kind = null, node = null, q = '', current = null, stopped = false, timer = 0, seq = 0;
   const n = h('span', { class: 'cv-n' }, '');
@@ -67,7 +67,16 @@ export function mountList(root, host, { onOpen }) {
   const nodes = h('div', { class: 'cv-chips', role: 'group', 'aria-label': 'Node' });
   const counts = h('div', { class: 'cv-count', 'data-test': 'counts' });
   const rows = h('div', { class: 'cv-rows' });
-  root.replaceChildren(h('div', { class: 'cv-head' }, h('div', { class: 'cv-title' }, h('h2', {}, 'Conversations'), n), search, chips, nodes, counts), rows);
+  // New: a bare conversation with claude.terminal (ai.session Open as the viewer), opened in the centre
+  const newB = h('button', { type: 'button', class: 'cv-btn primary', 'data-test': 'new-chat', onclick: async () => {
+    newB.disabled = true;
+    try {
+      const o = await host.call('Open', { provider: { Named: 'claude.terminal' }, model: null, account: null, system: null, profile: null, tools: [], harness: 'Bare', place: null, title: 'chat ' + new Date().toLocaleString(), parent: null, budget: { max_tokens: 0, max_cost_usd: 0, max_wall_s: 0 } });
+      if (onOpened) onOpened(o.conversation);
+    } catch (e) { n.textContent = e.refused ? 'New chats are not open to you' : 'New chat: ' + e.message; }
+    newB.disabled = false;
+  } }, 'New chat');
+  root.replaceChildren(h('div', { class: 'cv-head' }, h('div', { class: 'cv-title' }, h('h2', {}, 'Conversations'), n), onOpened ? newB : '', search, chips, nodes, counts), rows);
 
   const chip = (label, pressed, on) => h('button', { type: 'button', class: 'cv-chip', 'aria-pressed': pressed ? 'true' : 'false', onclick: on }, label);
   const drawChips = () => chips.replaceChildren(...KINDS.map(([l, k]) => chip(l, kind === k, () => { kind = k; drawChips(); load(); })));
@@ -152,6 +161,7 @@ export function mountList(root, host, { onOpen }) {
   return {
     stop() { stopped = true; clearInterval(every); clearTimeout(timer); offCosts(); if (seen) seen.disconnect(); },
     focus(id) { const b = rows.querySelector('[data-id="' + id + '"]'); if (b) b.focus(); },
+    refresh(id) { if (id) current = id; load(); },
   };
 }
 

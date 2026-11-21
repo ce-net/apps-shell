@@ -304,7 +304,8 @@ function say(crumb, title, line, link) {
 
 // The host of a view that declares `view = { cell, ... }`: its data comes from that one cell, through this gateway's
 // relay (`api/cell/<cell>/<Op>`, as the signed-in person; the cell's own gate decides), never from a URL the view builds.
-// call(op, req) -> Promise of the answer (rejects with an Error that has .status and .refused);
+// call(op, req) -> Promise of the answer (rejects with an Error that has .status and .refused); events(op, req, on)
+// a server-sent stream of the same cell;
 // watch(op, req, onDelta) long-polls (req may be a function giving the current request): onDelta(answer) for each
 // answer, onDelta(null, error) for a failure, then retries with backoff; returns stop().
 // open(target): through host.open of the ce-net browser (open.with, the pane); never a URL.
@@ -372,6 +373,19 @@ function hostFor(view, tab, notes) {
       }
     })();
     return () => { stopped = true; if (ctl) ctl.abort(); };
+  };
+  // events(op, req, onEvent): one stream of the view's own cell as server-sent events (GET api/cell/<cell>/<op>?<req>,
+  // as the signed-in person; the face passes ai.session Events only). onEvent(event) for each; onEvent(null, error)
+  // when it drops (error.again: the browser reconnects by itself) or ends; returns stop().
+  host.events = (op, req, onEvent) => {
+    if (!/^[A-Za-z]{1,32}$/.test(op) || typeof EventSource !== 'function') { onEvent(null, Object.assign(new Error('no events here'), { status: 0 })); return () => {}; }
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(req || {})) q.set(k, String(v));
+    const es = new EventSource('api/cell/' + cell + '/' + op + '?' + q.toString());
+    es.onmessage = m => { let e = null; try { e = JSON.parse(m.data); } catch (_) {} if (e != null) onEvent(e); };
+    es.addEventListener('end', () => { es.close(); onEvent(null, Object.assign(new Error('ended'), { status: 0, ended: true })); });
+    es.onerror = () => onEvent(null, Object.assign(new Error(es.readyState === 2 ? 'closed' : 'reconnecting'), { status: 0, again: es.readyState !== 2 }));
+    return () => es.close();
   };
   // open(target): a ce-ref (or an http address, which becomes a web: ref) opens through open.with in the pane
   host.open = (target, opts) => {

@@ -395,3 +395,31 @@ fn the_now_and_business_monitor_tabs_follow_their_right_and_shell() {
     live.insert("business.view".into(), now - LIVE_MS - 1);
     assert!(routes(&["person.now:read", "business.view:html"], &live).is_empty());
 }
+
+/// Slice 3 from the tab (repo:ce docs/AI-AS-CELLS-2026-11-18.md section 12.1): the relay passes AI_OPS only, each
+/// under the cell's own right; a page opens the Bare harness only with no tool grants, and Send never waits.
+#[test]
+fn the_ai_relay_passes_its_table_only_and_checks_each_request() {
+    use apps_shell::{ai_check, ai_need};
+    assert_eq!(ai_need("Open"), Some("ai.session:open"));
+    assert_eq!(ai_need("Continue"), Some("ai.session:send"));
+    assert_eq!(ai_need("Interrupt"), Some("ai.session:send"));
+    assert_eq!(ai_need("Ask"), Some("ai.session:ask"));
+    assert_eq!(ai_need("Events"), Some("ai.session:read"));
+    for never in ["ConfigPut", "ProfilePut", "ImportRun", "Rehome", "Seed"] {
+        assert_eq!(ai_need(never), None, "{never}");
+    }
+    let mut open = serde_json::json!({ "provider": { "Named": "claude.terminal" }, "harness": { "Code": { "cwd": "/", "edit": true, "shell": true } }, "tools": [] });
+    assert!(ai_check("Open", &mut open).is_err(), "a Code harness is a shell on the node");
+    let mut open = serde_json::json!({ "provider": { "Named": "claude.terminal" }, "harness": "Bare", "tools": [{ "api": "crm.people", "op": "Get", "chain": "" }] });
+    assert!(ai_check("Open", &mut open).is_err());
+    let mut open = serde_json::json!({ "provider": { "Named": "claude.terminal" }, "harness": "Bare", "tools": [] });
+    assert!(ai_check("Open", &mut open).is_ok());
+    let mut send = serde_json::json!({ "conversation": "c1", "parts": [{ "Text": "hi" }], "expect": null, "wait": true });
+    ai_check("Send", &mut send).unwrap();
+    assert_eq!(send["wait"], false, "the answer comes over Events");
+    let mut tool = serde_json::json!({ "conversation": "c1", "parts": [{ "ToolResult": { "id": "1", "ok": true, "out": "" } }], "wait": false });
+    assert!(ai_check("Send", &mut tool).is_err());
+    assert!(ai_check("Ask", &mut serde_json::json!({ "text": "  " })).is_err());
+    assert!(ai_check("Read", &mut serde_json::json!([])).is_err(), "a JSON object");
+}

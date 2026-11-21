@@ -97,6 +97,61 @@ pub fn viewer_grant(abilities: &[String]) -> Vec<String> {
     v
 }
 
+/// The ops the Conversations tab's relay passes to ai.session (repo:ce docs/AI-AS-CELLS-2026-11-18.md section 12.1),
+/// each with the right the viewer must hold, and nothing else: no `Config*`, `Profile*`, `ImportRun` or `Rehome` from
+/// a page. `Events` is the one stream, served as server-sent events (GET); every other op is a POST.
+pub const AI_OPS: &[(&str, &str)] = &[
+    ("List", "ai.session:list"),
+    ("Get", "ai.session:read"),
+    ("Read", "ai.session:read"),
+    ("Events", "ai.session:read"),
+    ("Open", "ai.session:open"),
+    ("Send", "ai.session:send"),
+    ("Continue", "ai.session:send"),
+    ("Fork", "ai.session:open"),
+    ("Interrupt", "ai.session:send"),
+    ("Close", "ai.session:close"),
+    ("Ask", "ai.session:ask"),
+];
+
+/// The right `op` of the ai.session relay needs, or None for an op it does not pass.
+pub fn ai_need(op: &str) -> Option<&'static str> {
+    AI_OPS.iter().find(|(o, _)| *o == op).map(|(_, n)| *n)
+}
+
+/// What the relay changes or refuses in a page's request before ai.session sees it (JSON, as the page sent it):
+/// `Open` and `Ask` run the Bare harness only with no tool grants (a Code harness is a shell on the node: never from a
+/// page); `Send` never waits (the answer comes over Events), with text and ce-ref attachments only.
+pub fn ai_check(op: &str, body: &mut serde_json::Value) -> Result<(), String> {
+    let o = body.as_object_mut().ok_or("a JSON object")?;
+    match op {
+        "Open" => {
+            if o.get("harness").is_some_and(|h| h != "Bare") {
+                return Err("a page opens the Bare harness only".into());
+            }
+            if o.get("tools").and_then(|t| t.as_array()).is_some_and(|t| !t.is_empty()) {
+                return Err("no tool grants from a page".into());
+            }
+        }
+        "Ask" => {
+            if o.get("text").and_then(|t| t.as_str()).is_none_or(|t| t.trim().is_empty() || t.len() > 32 * 1024) {
+                return Err("text: 1 to 32768 bytes".into());
+            }
+        }
+        "Send" => {
+            o.insert("wait".into(), serde_json::Value::Bool(false));
+            for p in o.get("parts").and_then(|p| p.as_array()).into_iter().flatten() {
+                let ok = p.get("Text").is_some_and(|t| t.as_str().is_some_and(|t| t.len() <= 32 * 1024)) || p.get("Attachment").is_some_and(|t| t.is_string());
+                if !ok {
+                    return Err("parts: Text (at most 32768 bytes) or Attachment only".into());
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// The ops the Conversations tab's terminal relay passes to term.session, each with the right the viewer must hold;
 /// nothing else (no Open, Close, Freeze or Resize from a page). `Watch` is the long poll over the cell's Attach stream.
 pub const TERM_OPS: &[(&str, &str)] = &[

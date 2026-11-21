@@ -76,3 +76,34 @@ docs/term-proof/): throwaway pane `c89c-proof`.
 - t-term-rowonly (ai.session only): rows, no panes, /v/conv-term.js 404. t-term-stranger: no tab, module 404.
 - curl: debian and leif-desk answer 503 "term.session is not running on <node>" (it is not installed there yet).
   Before the Node check, they showed ops-1's panes.
+
+## Slice 3: talking from the tab (2026-11-21, foreman/win-c89c; repo:ce docs/AI-AS-CELLS-2026-11-18.md section 12)
+
+Leif 2026-11-21: "i must always be able to directly interact with all ai".
+
+- Relay `POST /api/cell/ai.session/<Op>` passes `AI_OPS` only (lib.rs), each under the cell's own right: List, Get,
+  Read, Open, Send, Continue (op 17), Fork, Interrupt, Close, Ask (op 18). `Config*`, `Profile*`, `ImportRun` and
+  `Rehome` are never passed from a page (404). `ai_check` runs before the call: Open takes the Bare harness only with
+  no tool grants (a Code harness is a shell on the node), Send never waits (the answer comes over Events), parts
+  are Text (at most 32 KB) or Attachment.
+- `GET /api/cell/ai.session/Events?conversation=<id>`: server-sent events over one ce-wire stream opened as the viewer.
+  Get first, so a row the viewer may not read is 403/404 before a stream opens; a comment every 15 s; ends on
+  Closed, at stream end, or after 30 min. The kit's `host.events(op, req, on)` (site/_k/shell.js) is the module's
+  one way to it (EventSource on the same origin; `connect-src 'self'` already allows it).
+- UI: "New chat" (Open, Bare, claude.terminal) at the top of the list; under a conversation the message box (Send;
+  Ctrl/Cmd+Enter), the answer written live (Delta), Interrupt while it answers, Fork (at the last turn: native), Close.
+  An imported Claude Code row shows "Continue here" (Continue adopts it in place), then the same box.
+- The copied ai.session contract is ai-session ce6eef1's whole block (schema `711b33ac59622d2b`, pinned by a test).
+- The tab is now one screen high on desktop: the list and the turns scroll inside it, so the message box stays in
+  view (it was below 300 rows). On a phone the message box sticks to the bottom.
+
+Proof (foreman-ops-1, capped user units `c89c-*`: ai.session#c89c, ai.provider#claude.terminal.c89c, ai.account#c89c,
+apps-shell faces-only on 18886 behind a stand-in gate; test persons only, stopped and their key destroyed after;
+docs/slice3-proof/):
+- t-c89c-chat (list, read, open, send, close, ask): New chat answered a poem ending kiwi-42, streamed live
+  (02-live-delta); a second message in it answered kiwi-42 (04); a count to 2000 was interrupted mid-answer: the
+  note says "Interrupted.", the row is Idle (05, 06); Fork at the last turn (native, `--fork-session`) answered
+  kiwi-42 from the parent's context (07); the imported throwaway transcript a2a3e512 was continued in place and
+  answered kiwi-77 from its own history (09). 390 px: no horizontal scroll (10).
+- t-c89c-reader (list, read): New chat "not open to you", Send 403 (11).
+- curl: Send{wait: true} from a page answered at once (wait forced false); Open with a Code harness 400; ConfigPut 404.

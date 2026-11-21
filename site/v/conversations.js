@@ -1,4 +1,4 @@
-// The Conversations tab (repo:ce/docs/AI-AS-CELLS-2026-11-18.md section 6, slice 2: read only). Two UI cells side by
+// The Conversations tab (repo:ce/docs/AI-AS-CELLS-2026-11-18.md section 6, slice 2 reading, section 12 slice 3 talking). Two UI cells side by
 // side: conv.list (left: every conversation of the viewer's realm, from ai.session List) and conv.thread (centre: one
 // conversation's turns, ai.session Get + Read). On a phone one at a time, Back returns to the list. Every call goes
 // through the shell's relay to ai.session as the viewer; ai.session's gate and tenant rule decide what comes back.
@@ -14,8 +14,9 @@ const CSS = `
 @media (min-width: 761px){.cv-usage{position:sticky;top:0;z-index:2}}
 .cv-usage:empty{display:none}
 .cv{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:0;min-height:calc(100vh - 120px);border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden}
-.cv-l{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
-.cv-t{display:flex;flex-direction:column;min-width:0}
+.cv-l{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;min-height:0}
+.cv-t{display:flex;flex-direction:column;min-width:0;min-height:0}
+@media (min-width: 761px){.cv{height:calc(100vh - 120px)}}
 .cv-head{padding:var(--s-3) var(--s-4);border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:var(--s-2)}
 .cv-title{display:flex;align-items:baseline;gap:var(--s-2);justify-content:space-between}
 .cv-title h2{margin:0;font-size:var(--t-lg)}
@@ -47,12 +48,22 @@ const CSS = `
 .cv-empty{padding:var(--s-6) var(--s-4);color:var(--ink-3)}
 .cv-back{display:none}
 .cv-btn{border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:var(--r-sm);padding:var(--s-1) var(--s-3);font:inherit;cursor:pointer;min-height:36px}
+.cv-btn.primary{background:var(--acc);border-color:var(--acc);color:var(--on-acc, #fff)}
+.cv-btn:disabled{opacity:.5;cursor:default}
+.cv-compose{border-top:1px solid var(--line);padding:var(--s-2) var(--s-4) var(--s-3);display:flex;flex-direction:column;gap:var(--s-2);background:var(--surface)}
+.cv-bar{display:flex;flex-direction:column;gap:var(--s-2)}
+.cv-acts{display:flex;flex-wrap:wrap;gap:var(--s-2)}
+.cv-in{width:100%;box-sizing:border-box;resize:vertical;min-height:44px;padding:var(--s-2) var(--s-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--well);color:var(--ink);font:inherit}
+.cv-note{margin:0;font-size:var(--t-xs);color:var(--ink-3)}
+.cv-note:empty{display:none}
+.cv-draft .cv-text{color:var(--ink-2)}
 @media (max-width: 760px){
  .cv{grid-template-columns:1fr;border-radius:0;border-left:0;border-right:0}
  .cv-l{border-right:0}
  .cv.open .cv-l{display:none}
  .cv:not(.open) .cv-t{display:none}
  .cv-back{display:inline-block;margin-bottom:var(--s-2)}
+ .cv-compose{position:sticky;bottom:0}
 }`;
 
 let sheet = null;
@@ -78,13 +89,20 @@ export function mount(root, host) {
   import('./conv-usage.js').then(m => { if (!gone) stopStrip = m.mountStrip(strip, host); }).catch(() => { strip.remove(); });
   let gone = false;
   let stopThread = () => {};
-  const list = mountList(left, host, {
-    onOpen(c) {
-      box.classList.add('open');
-      stopThread();
-      stopThread = mountThread(centre, host, c, { onBack() { box.classList.remove('open'); list.focus(c.id); } });
-    },
-  });
+  // a new chat, a fork or a continued row opens in the centre; the list refreshes to show it
+  const openId = async id => {
+    let c;
+    try { c = await host.call('Get', { conversation: id }); } catch (_) { return; }
+    if (gone) return;
+    list.refresh();
+    show(c);
+  };
+  const show = c => {
+    box.classList.add('open');
+    stopThread();
+    stopThread = mountThread(centre, host, c, { onBack() { box.classList.remove('open'); list.focus(c.id); }, onOpened: openId });
+  };
+  const list = mountList(left, host, { onOpen: show, onOpened: openId });
   stopThread = mountThread(centre, host, null, {});
   return () => { gone = true; stopStrip(); list.stop(); stopThread(); };
 }
