@@ -380,3 +380,18 @@ fn a_starred_session_limit_stays_a_limit() {
     assert_eq!(term_scope(v(&["term.session:read", "term.session:where:node=a*"])), None);
     assert_eq!(term_scope(v(&["term.session:read", "term.session:where:session=a*b*"])), None);
 }
+
+/// The Now and Business monitor tabs (ce-net-net NOW, BUSINESS): each emerges with its one right while its shell
+/// (person.now, business.view) answers, and is gone when it stops.
+#[test]
+fn the_now_and_business_monitor_tabs_follow_their_right_and_shell() {
+    let now = 1_000_000;
+    let mut live = all_live(now);
+    let routes = |a: &[&str], l: &BTreeMap<String, u64>| tabs_for(&s(a), l, now).into_iter().map(|t| t.route).collect::<Vec<_>>();
+    assert_eq!(routes(&["person.now:read"], &live), ["/now/"]);
+    assert_eq!(routes(&["business.view:html"], &live), ["/business-monitor/"]);
+    assert_eq!(routes(&["person.now:read", "business.view:html"], &live), ["/now/", "/business-monitor/"]);
+    live.insert("person.now".into(), now - LIVE_MS - 1);
+    live.insert("business.view".into(), now - LIVE_MS - 1);
+    assert!(routes(&["person.now:read", "business.view:html"], &live).is_empty());
+}

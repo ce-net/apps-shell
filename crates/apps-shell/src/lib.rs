@@ -73,6 +73,9 @@ pub const GRANT: &[&str] = &[
     "arch.map:health",
     "arch.notes:health",
     "decision.card:health",
+    // the Now and Business monitor tabs are live while their shells answer
+    "person.now:health",
+    "business.view:health",
     "delegate:1",
 ];
 

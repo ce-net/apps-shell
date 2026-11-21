@@ -22,6 +22,8 @@ foreman-shell-api = { workspace = true }
 cr-shell-api = { workspace = true }
 open-with-api = { workspace = true }
 home-shell-api = { workspace = true }
+person-now-api = { workspace = true }
+business-monitor-api = { workspace = true }
 ui-chain = { workspace = true }
 site-gateway = { workspace = true }
 ce-wire = { workspace = true, features = ["server", "client"] }

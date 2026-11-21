@@ -96,6 +96,8 @@ async fn shell_ok(shell: &str) -> bool {
         "feed.view" => health!(feed_view_api::FeedView, feed_view_api::HealthOp, "feed.view:health"),
         "ai.session" => health!(ai_session_api::AiSession, ai_session_api::HealthOp, "ai.session:health"),
         "arch.map" => health!(arch_map_api::ArchMap, arch_map_api::HealthOp, "arch.map:health"),
+        "person.now" => health!(person_now_api::PersonNow, person_now_api::HealthOp, "person.now:health"),
+        "business.view" => health!(business_monitor_api::view::BusinessView, business_monitor_api::view::HealthOp, "business.view:health"),
         // a shell whose contract this build does not carry yet: never live here (its system shows in site.cellmap)
         _ => None,
     };

@@ -22,6 +22,7 @@ version = "0.1.0"
 dependencies = [
  "approve-inbox-api",
  "apps-shell-api",
+ "business-monitor-api",
  "ce-gate",
  "ce-net-net",
  "ce-wire",
@@ -29,6 +30,7 @@ dependencies = [
  "foreman-shell-api",
  "home-shell-api",
  "open-with-api",
+ "person-now-api",
  "serde",
  "serde_json",
  "sha2",
@@ -94,6 +96,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
+name = "business-monitor-api"
+version = "0.1.0"
+source = "git+https://github.com/Leif-Rydenfalk/business-monitor?rev=e7e671571e17e9a07ef783055224fbd85f106487#e7e671571e17e9a07ef783055224fbd85f106487"
+dependencies = [
+ "ce-wire",
+ "ui-facet-api",
+]
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -145,7 +156,7 @@ dependencies = [
 [[package]]
 name = "ce-net-net"
 version = "0.1.0"
-source = "git+https://github.com/ce-net/ce-net-net?rev=f74c2a539239cda670dee0f356da341c6a00b9a2#f74c2a539239cda670dee0f356da341c6a00b9a2"
+source = "git+https://github.com/ce-net/ce-net-net?rev=34032d77bbe6521d85982bd63bb22e579e889023#34032d77bbe6521d85982bd63bb22e579e889023"
 dependencies = [
  "cell-net",
 ]
@@ -569,6 +580,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "person-now-api"
+version = "0.1.0"
+source = "git+https://github.com/Leif-Rydenfalk/person-now?rev=c1279b632c2b06e19d13faf2017c05435de76e4d#c1279b632c2b06e19d13faf2017c05435de76e4d"
+dependencies = [
+ "ce-wire",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -916,6 +935,14 @@ dependencies = [
  "ce-gate",
  "ce-wire",
  "getrandom",
+]
+
+[[package]]
+name = "ui-facet-api"
+version = "0.1.0"
+source = "git+https://github.com/Leif-Rydenfalk/ui-facet?rev=1ae99e746fd7#1ae99e746fd76e7447771af9ab458e22f9ca54b8"
+dependencies = [
+ "ce-wire",
 ]
 
 [[package]]
